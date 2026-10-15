@@ -1,0 +1,8 @@
+displayName: "AutoBuild (prototype)"
+name: "autobuild"
+author: "Maiolao"
+main: "autobuild.AutoBuildMod"
+description: "Select a region and auto-place structures. Minimal environment check."
+version: "0.2.0"
+minGameVersion: 160
+java: true
