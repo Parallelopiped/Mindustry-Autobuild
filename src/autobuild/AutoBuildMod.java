@@ -8,7 +8,7 @@ import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
-import autobuild.plan.*;
+import autobuild.plan.DrillLayoutPlanner.*;
 import mindustry.content.*;
 import mindustry.core.*;
 import mindustry.entities.units.*;
@@ -20,34 +20,25 @@ import mindustry.type.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
 import mindustry.world.*;
+import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.production.*;
 
 import static mindustry.Vars.*;
 
 /**
- * F7 / "AutoBuild" button -> drag a region -> configure (ore, drill, output side, port position)
- * -> preview ghosts -> Build.
+ * F7 / "AutoBuild" button -> drag a region -> configure (ore, drill, belt, mode, output side,
+ * port position) -> preview ghosts -> Build.
  */
 public class AutoBuildMod extends Mod{
-    static final String[] dirNames = {"East", "North", "West", "South"};
-
     boolean selecting, dragging;
     int x0, y0, x1, y1;
 
-    /** current region (world tiles, inclusive) */
-    int ax, ay, bx, by;
-    // settings, kept between uses
-    Drill drill;
-    Item target;
-    int outDir = 0;
-    float portFrac = 0.5f;
-
+    /** settings persist between uses; also holds the last result */
+    final DrillFieldJob job = new DrillFieldJob();
     Seq<BuildPlan> preview;
-    int portX, portY;
 
     public AutoBuildMod(){
         Events.on(ClientLoadEvent.class, e -> {
-            drill = (Drill)Blocks.mechanicalDrill;
             ui.hudGroup.fill(t -> {
                 t.bottom().left().marginBottom(120f);
                 t.button("AutoBuild", this::toggle).size(110f, 40f).visible(() -> preview == null);
@@ -88,10 +79,10 @@ public class AutoBuildMod extends Mod{
             x1 = tx; y1 = ty;
             if(Core.input.keyRelease(KeyCode.mouseLeft)){
                 dragging = selecting = false;
-                ax = Mathf.clamp(Math.min(x0, x1), 0, world.width() - 1);
-                bx = Mathf.clamp(Math.max(x0, x1), 0, world.width() - 1);
-                ay = Mathf.clamp(Math.min(y0, y1), 0, world.height() - 1);
-                by = Mathf.clamp(Math.max(y0, y1), 0, world.height() - 1);
+                job.ax = Mathf.clamp(Math.min(x0, x1), 0, world.width() - 1);
+                job.bx = Mathf.clamp(Math.max(x0, x1), 0, world.width() - 1);
+                job.ay = Mathf.clamp(Math.min(y0, y1), 0, world.height() - 1);
+                job.by = Mathf.clamp(Math.max(y0, y1), 0, world.height() - 1);
                 showDialog();
             }
         }
@@ -99,148 +90,115 @@ public class AutoBuildMod extends Mod{
 
     // ---------------------------------------------------------------- UI
 
+    static boolean available(Block b){
+        return b.isVisible() && b.environmentBuildable() && (state.rules.infiniteResources || b.unlockedNow());
+    }
+
     void showDialog(){
         ObjectIntMap<Item> ores = new ObjectIntMap<>();
-        for(int x = ax; x <= bx; x++) for(int y = ay; y <= by; y++){
-            Item d = world.tile(x, y).drop();
-            if(d != null) ores.increment(d);
+        for(int x = job.ax; x <= job.bx; x++) for(int y = job.ay; y <= job.by; y++){
+            Tile t = world.tile(x, y);
+            // drop() also reports ore hidden under walls; only count reachable floor
+            if(t.drop() != null && !t.solid()) ores.increment(t.drop());
         }
         Seq<Item> oreList = new Seq<>();
         for(Item i : ores.keys()) oreList.add(i);
         oreList.sort(i -> -ores.get(i));
-        if(target == null || !ores.containsKey(target)) target = oreList.isEmpty() ? null : oreList.first();
+        if(job.target == null || !ores.containsKey(job.target)) job.target = oreList.isEmpty() ? null : oreList.first();
+
+        Seq<Drill> drills = content.blocks().select(b -> b instanceof Drill && available(b)).map(b -> (Drill)b);
+        drills.sort(d -> d.tier * 100 + d.size);
+        Seq<Block> belts = Seq.with(Blocks.conveyor, Blocks.titaniumConveyor).select(AutoBuildMod::available);
+        if(job.drill == null || !drills.contains(job.drill)) job.drill = drills.isEmpty() ? null : drills.first();
+        if(!belts.contains(job.belt)) job.belt = belts.isEmpty() ? null : belts.first();
+        job.team = player.team();
 
         BaseDialog dialog = new BaseDialog("AutoBuild: drill field");
         Table c = dialog.cont;
-        c.defaults().left().pad(4f);
-        c.add("Region: " + (bx - ax + 1) + " x " + (by - ay + 1) + " tiles").row();
+        c.defaults().left().pad(3f);
+        c.add("Region: " + (job.bx - job.ax + 1) + " x " + (job.by - job.ay + 1) + " tiles").row();
 
         c.add("Ore:").row();
         c.table(t -> {
             if(oreList.isEmpty()) t.add("[scarlet]no ore in region");
-            for(Item i : oreList){
+            int i = 0;
+            for(Item it : oreList){
                 t.button(b -> {
-                    b.image(i.uiIcon).size(24f).padRight(4f);
-                    b.add(i.localizedName + " (" + ores.get(i) + ")");
-                }, Styles.flatTogglet, () -> target = i).checked(b -> target == i).size(190f, 40f);
+                    b.image(it.uiIcon).size(24f).padRight(4f);
+                    b.add(it.localizedName + " (" + ores.get(it) + ")");
+                }, Styles.flatTogglet, () -> {
+                    job.target = it;
+                    // pick the cheapest drill that can mine it
+                    if(job.drill == null || job.drill.tier < it.hardness) job.drill = drills.find(d -> d.tier >= it.hardness);
+                }).checked(b -> job.target == it).size(190f, 40f);
+                if(++i % 4 == 0) t.row();
             }
         }).row();
 
         c.add("Drill:").row();
         c.table(t -> {
-            for(Block b : new Block[]{Blocks.mechanicalDrill, Blocks.pneumaticDrill}){
-                Drill d = (Drill)b;
+            int i = 0;
+            for(Drill d : drills){
+                String tags = (DrillFieldJob.needsPower(d) ? " [accent]⚡" : "") + (DrillFieldJob.needsLiquid(d) ? " [sky]liquid!" : "");
                 t.button(bt -> {
                     bt.image(d.uiIcon).size(24f).padRight(4f);
-                    bt.add(d.localizedName + " (tier " + d.tier + ")");
-                }, Styles.flatTogglet, () -> drill = d).checked(bt -> drill == d).size(260f, 40f);
+                    bt.add(d.localizedName + " [lightgray]T" + d.tier + " " + d.size + "x" + d.size + tags).growX();
+                }, Styles.flatTogglet, () -> job.drill = d).checked(bt -> job.drill == d)
+                    .disabled(bt -> job.target != null && d.tier < job.target.hardness).size(290f, 40f);
+                if(++i % 2 == 0) t.row();
             }
+        }).row();
+
+        c.add("Belt:").row();
+        c.table(t -> {
+            if(belts.isEmpty()) t.add("[scarlet]no supported conveyor available here");
+            for(Block b : belts){
+                float speed = b instanceof Conveyor cv ? cv.displayedSpeed : 0f;
+                t.button(bt -> {
+                    bt.image(b.uiIcon).size(24f).padRight(4f);
+                    bt.add(b.localizedName + " [lightgray]" + Strings.autoFixed(speed, 1) + "/s");
+                }, Styles.flatTogglet, () -> job.belt = b).checked(bt -> job.belt == b).size(240f, 40f);
+            }
+        }).row();
+
+        c.add("Optimize for:").row();
+        c.table(t -> {
+            t.button("Max output", Styles.flatTogglet, () -> job.mode = Mode.OUTPUT).checked(b -> job.mode == Mode.OUTPUT).size(170f, 40f);
+            t.button("Material efficiency", Styles.flatTogglet, () -> job.mode = Mode.EFFICIENCY).checked(b -> job.mode == Mode.EFFICIENCY).size(220f, 40f);
         }).row();
 
         c.add("Output side:").row();
         c.table(t -> {
             for(int i = 0; i < 4; i++){
                 int dir = i;
-                t.button(dirNames[i], Styles.flatTogglet, () -> outDir = dir).checked(b -> outDir == dir).size(100f, 40f);
+                t.button(DrillFieldJob.dirNames[i], Styles.flatTogglet, () -> job.outDir = dir).checked(b -> job.outDir == dir).size(100f, 40f);
             }
         }).row();
 
         c.add("Port position along that edge (left/bottom -> right/top):").row();
         c.table(t -> {
             Label l = new Label("");
-            t.slider(0f, 1f, 0.01f, portFrac, v -> portFrac = v).width(300f);
+            t.slider(0f, 1f, 0.01f, job.portFrac, v -> job.portFrac = v).width(300f);
             t.add(l).padLeft(8f);
-            l.update(() -> l.setText(Mathf.round(portFrac * 100) + "%"));
+            l.update(() -> l.setText(Mathf.round(job.portFrac * 100) + "%"));
         }).row();
 
         dialog.buttons.button("Cancel", Icon.cancel, () -> { dialog.hide(); preview = null; }).size(160f, 54f);
         dialog.buttons.button("Preview", Icon.ok, () -> {
             dialog.hide();
             plan();
-        }).size(160f, 54f).disabled(b -> target == null);
+        }).size(160f, 54f).disabled(b -> job.target == null || job.drill == null || job.belt == null || job.drill.tier < job.target.hardness);
         dialog.show();
     }
 
-    // ---------------------------------------------------------------- planning
-
-    /** local (u,v) -> world, for a frame where +u points toward outDir. */
-    int wx(int u, int v){
-        switch(outDir){
-            case 0: return ax + u;
-            case 1: return bx - v;
-            case 2: return bx - u;
-            default: return ax + v;
-        }
-    }
-
-    int wy(int u, int v){
-        switch(outDir){
-            case 0: return ay + v;
-            case 1: return ay + u;
-            case 2: return by - v;
-            default: return by - u;
-        }
-    }
-
     void plan(){
-        boolean rot = outDir % 2 == 1;
-        int W = rot ? by - ay + 1 : bx - ax + 1, H = rot ? bx - ax + 1 : by - ay + 1;
-        int s = drill.size, off = (s - 1) / 2;
-        long time = Time.millis();
-
-        // snapshot the region in the local frame
-        boolean[][] beltOk = new boolean[W][H], drillOk = new boolean[W][H];
-        int[][] drop = new int[W][H];
-        for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
-            int x = wx(u, v), y = wy(u, v);
-            Tile t = world.tile(x, y);
-            beltOk[u][v] = Build.validPlace(Blocks.conveyor, player.team(), x, y, 0);
-            Item d = t.drop();
-            drop[u][v] = d != null && drill.tier >= d.hardness ? d.id : -1;
-        }
-        for(int u = 0; u + s <= W; u++) for(int v = 0; v + s <= H; v++){
-            drillOk[u][v] = Build.validPlace(drill, player.team(), originX(u, v, s) , originY(u, v, s), 0);
-        }
-
-        // slider is in world order (left->right / bottom->top); local v runs the other way for N and W
-        float f = outDir == 1 || outDir == 2 ? 1f - portFrac : portFrac;
-        DrillLayoutPlanner p = new DrillLayoutPlanner(W, H, s, beltOk, drillOk, drop, target.id, Mathf.round(f * (H - 1)), Math.max(1, s * s / 2));
-        boolean ok = p.plan();
-        Log.info("[autobuild] @x@ local, out=@ ok=@ drills=@ ore=@ routed=@ dropped=@ phase=@ in @ms @",
-            W, H, dirNames[outDir], ok, p.drills, p.oreTiles, p.segmentsRouted, p.segmentsDropped, p.phase, Time.timeSinceMillis(time), ok ? "" : p.failure);
-
-        if(!ok){
-            ui.showInfoToast("[scarlet]AutoBuild failed: " + p.failure, 4f);
+        if(!job.run()){
+            ui.showInfoToast("[scarlet]AutoBuild failed: " + job.error, 4f);
             preview = null;
             return;
         }
-
-        Seq<BuildPlan> plans = new Seq<>();
-        for(DrillLayoutPlanner.Place pl : p.places){
-            if(pl.kind == DrillLayoutPlanner.DRILL){
-                plans.add(new BuildPlan(originX(pl.u, pl.v, s), originY(pl.u, pl.v, s), 0, drill));
-            }else{
-                plans.add(new BuildPlan(wx(pl.u, pl.v), wy(pl.u, pl.v), (pl.dir + outDir) % 4, Blocks.conveyor));
-            }
-        }
-        // belts first so drills have somewhere to output when they finish
-        plans.sort(b -> b.block == Blocks.conveyor ? 0 : 1);
-        preview = plans;
-        portX = wx(W - 1, p.port);
-        portY = wy(W - 1, p.port);
-        ui.showInfoToast(Strings.format("@ drills on @ @ ore tiles, @ lane(s) routed@", p.drills, p.oreTiles, target.localizedName, p.segmentsRouted,
-            p.segmentsDropped > 0 ? ", " + p.segmentsDropped + " dropped (unroutable)" : ""), 4f);
-    }
-
-    /** world origin tile of an s x s block whose local footprint min corner is (u,v) */
-    int originX(int u, int v, int s){
-        int mx = Math.min(wx(u, v), wx(u + s - 1, v + s - 1));
-        return mx + (s - 1) / 2;
-    }
-
-    int originY(int u, int v, int s){
-        int my = Math.min(wy(u, v), wy(u + s - 1, v + s - 1));
-        return my + (s - 1) / 2;
+        preview = new Seq<>(job.plans);
+        ui.showInfoToast(job.summary(), 6f);
     }
 
     void commit(){
@@ -256,12 +214,15 @@ public class AutoBuildMod extends Mod{
 
     // ---------------------------------------------------------------- drawing
 
+    static void rect(int ax, int ay, int bx, int by){
+        Lines.rect(ax * tilesize - tilesize / 2f, ay * tilesize - tilesize / 2f, (bx - ax + 1) * tilesize, (by - ay + 1) * tilesize);
+    }
+
     void draw(){
         if(dragging){
-            int ax = Math.min(x0, x1), ay = Math.min(y0, y1), bx = Math.max(x0, x1), by = Math.max(y0, y1);
             Draw.z(Layer.overlayUI);
             Lines.stroke(2f, Pal.accent);
-            Lines.rect(ax * tilesize - tilesize / 2f, ay * tilesize - tilesize / 2f, (bx - ax + 1) * tilesize, (by - ay + 1) * tilesize);
+            rect(Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1));
             Draw.reset();
         }
         if(preview != null){
@@ -269,9 +230,9 @@ public class AutoBuildMod extends Mod{
             for(BuildPlan p : preview) p.block.drawPlan(p, preview, true);
             Draw.z(Layer.overlayUI);
             Lines.stroke(1.5f, Pal.accent);
-            Lines.rect(ax * tilesize - tilesize / 2f, ay * tilesize - tilesize / 2f, (bx - ax + 1) * tilesize, (by - ay + 1) * tilesize);
+            rect(job.ax, job.ay, job.bx, job.by);
             // port marker: arrow pointing out of the region
-            float px = portX * tilesize, py = portY * tilesize, ang = outDir * 90f;
+            float px = job.portX * tilesize, py = job.portY * tilesize, ang = job.outDir * 90f;
             Draw.color(Pal.remove);
             Lines.square(px, py, tilesize / 2f + 1f);
             Fill.tri(px + Angles.trnsx(ang, 12f), py + Angles.trnsy(ang, 12f),
@@ -279,5 +240,12 @@ public class AutoBuildMod extends Mod{
                 px + Angles.trnsx(ang - 90f, 4f) + Angles.trnsx(ang, 6f), py + Angles.trnsy(ang - 90f, 4f) + Angles.trnsy(ang, 6f));
             Draw.reset();
         }
+    }
+
+    // ---------------------------------------------------------------- headless test
+
+    @Override
+    public void registerServerCommands(CommandHandler handler){
+        ServerTest.register(handler);
     }
 }
