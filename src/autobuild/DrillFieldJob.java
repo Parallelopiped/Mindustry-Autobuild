@@ -1,6 +1,7 @@
 package autobuild;
 
 import arc.math.*;
+import arc.math.geom.*;
 import arc.struct.*;
 import arc.util.*;
 import autobuild.plan.*;
@@ -10,6 +11,7 @@ import mindustry.entities.units.*;
 import mindustry.game.*;
 import mindustry.type.*;
 import mindustry.world.*;
+import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.power.*;
 import mindustry.world.blocks.production.*;
 import mindustry.world.consumers.*;
@@ -36,6 +38,8 @@ public class DrillFieldJob{
     /** port position along the output edge, world order (left->right / bottom->top) */
     public float portFrac = 0.5f;
     public Mode mode = Mode.OUTPUT;
+    /** allow item bridges in layout and routing */
+    public boolean bridges = true;
 
     // ---- results ----
     public final Seq<BuildPlan> plans = new Seq<>();
@@ -43,6 +47,8 @@ public class DrillFieldJob{
     public int portX, portY;
     public float itemsPerSecond, beltCapacity, powerPerSecond;
     public PowerNode node;
+    public ItemBridge bridge;
+    int W, H;
     public String error;
 
     public static boolean needsPower(Block b){
@@ -85,25 +91,36 @@ public class DrillFieldJob{
 
     int originY(int u, int v, int s){ return Math.min(wy(u, v), wy(u + s - 1, v + s - 1)) + (s - 1) / 2; }
 
+    /** Synchronous prepare + compute + finish (server test). */
     public boolean run(){
+        return prepare() && compute() && finish();
+    }
+
+    /** Main thread: snapshot the region into planner input. */
+    public boolean prepare(){
         plans.clear();
         error = null;
+        planner = null;
         boolean rot = outDir % 2 == 1;
-        int W = rot ? by - ay + 1 : bx - ax + 1, H = rot ? bx - ax + 1 : by - ay + 1;
+        W = rot ? by - ay + 1 : bx - ax + 1;
+        H = rot ? bx - ax + 1 : by - ay + 1;
         int s = drill.size;
         boolean power = needsPower(drill);
         node = power ? powerNode() : null;
         if(power && node == null){ error = drill.localizedName + " needs power, but power nodes aren't available here"; return false; }
+        bridge = bridges && available(Blocks.itemBridge) ? (ItemBridge)Blocks.itemBridge : null;
 
         Params p = new Params();
         p.W = W; p.H = H; p.drillSize = s; p.target = target.id; p.mode = mode; p.power = power;
+        p.bridges = bridge != null;
+        if(bridge != null) p.bridgeRange = bridge.range;
         p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H]; p.drillOk = new boolean[W][H]; p.drop = new int[W][H];
         p.lowPriority = new boolean[content.items().size];
         for(Item i : content.items()) p.lowPriority[i.id] = i.lowPriority;
         if(node != null){ p.nodeRange = node.laserRange; p.nodeMaxLinks = node.maxNodes; }
         for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
             int x = wx(u, v), y = wy(u, v);
-            p.beltOk[u][v] = Build.validPlace(belt, team, x, y, 0);
+            p.beltOk[u][v] = Build.validPlace(belt, team, x, y, 0) && (bridge == null || Build.validPlace(bridge, team, x, y, 0));
             p.nodeOk[u][v] = node != null && Build.validPlace(node, team, x, y, 0);
             Tile t = world.tile(x, y);
             p.drop[u][v] = drill.canMine(t) ? drill.getDrop(t).id : -1;
@@ -114,37 +131,68 @@ public class DrillFieldJob{
         // slider is in world order; local v runs the other way for N and W
         float f = outDir == 1 || outDir == 2 ? 1f - portFrac : portFrac;
         p.portV = Mathf.round(f * (H - 1));
-
-        long time = Time.millis();
         planner = new DrillLayoutPlanner(p);
-        boolean ok = planner.plan();
-        Log.info("[autobuild] @x@ out=@ @ @ ok=@ drills=@ ore=@ nodes=@ routed=@ droppedLanes=@ droppedForPower=@ powerGroups=@ in @ms @",
-            W, H, dirNames[outDir], drill.name, mode, ok, planner.drills, planner.oreTiles, planner.nodes, planner.segmentsRouted,
-            planner.segmentsDropped, planner.drillsDroppedForPower, planner.powerGroups, Time.timeSinceMillis(time), ok ? "" : planner.failure);
-        if(!ok){ error = planner.failure; return false; }
+        return true;
+    }
 
+    /** Any thread: run the planner. Throws CancelledException if cancelled. */
+    public boolean compute(){
+        long time = Time.millis();
+        boolean ok = planner.plan();
+        Log.info("[autobuild] @x@ out=@ @ @ layout=@ ok=@ drills=@ ore=@ belts=@ bridges=@ nodes=@ routed=@ droppedLanes=@ droppedForPower=@ powerGroups=@ in @ms @",
+            W, H, dirNames[outDir], drill.name, mode, planner.layout, ok, planner.drills, planner.oreTiles, planner.belts, planner.bridges, planner.nodes,
+            planner.segmentsRouted, planner.segmentsDropped, planner.drillsDroppedForPower, planner.powerGroups, Time.timeSinceMillis(time), ok ? "" : planner.failure);
+        if(!ok) error = planner.failure;
+        return ok;
+    }
+
+    /** Main thread: convert the result to world BuildPlans. */
+    public boolean finish(){
+        plans.clear();
         float perOre = 60f / drill.getDrillTime(target);
         itemsPerSecond = 0f;
-        // nodes first (they link to each other as they're built, drills link to them when finished), then belts, then drills
+        Seq<BuildPlan> nodes = new Seq<>(), logistics = new Seq<>(), drills = new Seq<>();
         for(Place pl : planner.places){
+            BuildPlan bp = toPlan(pl);
             switch(pl.kind){
-                case DrillLayoutPlanner.NODE: plans.add(new BuildPlan(wx(pl.u, pl.v), wy(pl.u, pl.v), 0, node)); break;
-                case DrillLayoutPlanner.BELT: plans.add(new BuildPlan(wx(pl.u, pl.v), wy(pl.u, pl.v), (pl.dir + outDir) % 4, belt)); break;
-                default:
-                    plans.add(new BuildPlan(originX(pl.u, pl.v, s), originY(pl.u, pl.v, s), 0, drill));
-                    itemsPerSecond += perOre * pl.ore;
+                case DrillLayoutPlanner.NODE: nodes.add(bp); break;
+                case DrillLayoutPlanner.DRILL: drills.add(bp); itemsPerSecond += perOre * pl.ore; break;
+                default: logistics.add(bp);
             }
         }
-        beltCapacity = belt instanceof mindustry.world.blocks.distribution.Conveyor c ? c.displayedSpeed : Float.MAX_VALUE;
-        powerPerSecond = power ? drill.consPower.usage * 60f * planner.drills : 0f;
+        // nodes first (they link to each other as they're built, drills link to them when finished), then logistics, then drills
+        plans.addAll(nodes).addAll(logistics).addAll(drills);
+        beltCapacity = belt instanceof Conveyor c ? c.displayedSpeed : Float.MAX_VALUE;
+        powerPerSecond = node != null ? drill.consPower.usage * 60f * planner.drills : 0f;
         portX = wx(W - 1, planner.port);
         portY = wy(W - 1, planner.port);
         return true;
     }
 
+    /** Planner place (local frame) -> world BuildPlan. Pure arithmetic: safe on the planning thread. */
+    public BuildPlan toPlan(Place pl){
+        int s = drill.size;
+        switch(pl.kind){
+            case DrillLayoutPlanner.NODE: return new BuildPlan(wx(pl.u, pl.v), wy(pl.u, pl.v), 0, node);
+            case DrillLayoutPlanner.BELT: return new BuildPlan(wx(pl.u, pl.v), wy(pl.u, pl.v), (pl.dir + outDir) % 4, belt);
+            case DrillLayoutPlanner.BRIDGE: {
+                int x = wx(pl.u, pl.v), y = wy(pl.u, pl.v);
+                // relative link; (0,0) marks an end bridge and also stops the game's auto-linking
+                // (ItemBridge.findLink only links from a previous bridge whose link is -1)
+                return new BuildPlan(x, y, 0, bridge, new Point2(wx(pl.lu, pl.lv) - x, wy(pl.lu, pl.lv) - y));
+            }
+            default: return new BuildPlan(originX(pl.u, pl.v, s), originY(pl.u, pl.v, s), 0, drill);
+        }
+    }
+
+    static boolean available(Block b){
+        return b.isVisible() && b.environmentBuildable() && (state.rules.infiniteResources || b.unlockedNow());
+    }
+
     public String summary(){
         StringBuilder sb = new StringBuilder();
         sb.append(Strings.format("@ drills on @ @ ore tiles, ~@/s", planner.drills, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
+        sb.append(Strings.format(" [lightgray](@)[]", planner.layout));
         if(planner.nodes > 0) sb.append(Strings.format(", @ power nodes, needs @ power/s", planner.nodes, Strings.autoFixed(powerPerSecond, 1)));
         if(itemsPerSecond > beltCapacity) sb.append(Strings.format("\n[orange]Exceeds @ capacity (~@/s): output will back up", belt.localizedName, Strings.autoFixed(beltCapacity, 1)));
         if(planner.segmentsDropped > 0) sb.append("\n[orange]").append(planner.segmentsDropped).append(" lane(s) dropped: no route to the port");

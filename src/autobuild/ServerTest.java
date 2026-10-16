@@ -28,18 +28,20 @@ public class ServerTest{
     static float predicted;
 
     static void register(CommandHandler handler){
-        handler.register("abtest", "<item> <drill> <dir> <mode> [size] [belt]", "AutoBuild: plan and instantly place a drill field", args -> {
+        handler.register("abtest", "<item> <drill> <dir> <mode> [size] [belt] [nobridge]", "AutoBuild: plan and instantly place a drill field", args -> {
             if(!state.isGame()){ Log.err("host a map first"); return; }
             Item item = content.item(args[0]);
             Block drill = content.block(args[1]);
             int dir = "ENWS".indexOf(Character.toUpperCase(args[2].charAt(0)));
             int size = args.length > 4 ? Strings.parseInt(args[4], 30) : 30;
             Block belt = args.length > 5 ? content.block(args[5]) : Blocks.conveyor;
+            boolean bridges = args.length <= 6 || !args[6].equals("nobridge");
             if(item == null || !(drill instanceof Drill) || dir < 0 || belt == null){ Log.err("bad arguments"); return; }
 
             DrillFieldJob job = new DrillFieldJob();
             job.drill = (Drill)drill; job.target = item; job.outDir = dir; job.belt = belt;
             job.mode = args[3].startsWith("e") ? Mode.EFFICIENCY : Mode.OUTPUT;
+            job.bridges = bridges;
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
             if(!job.run()){
@@ -56,6 +58,13 @@ public class ServerTest{
                 return;
             }
             Log.info("[abtest] @", Strings.stripColors(job.summary()).replace('\n', ' '));
+            if(bridges){
+                // same region without bridges, for a like-for-like comparison (ore is randomized per server start)
+                DrillFieldJob alt = new DrillFieldJob();
+                alt.drill = job.drill; alt.target = job.target; alt.outDir = job.outDir; alt.belt = job.belt; alt.mode = job.mode;
+                alt.ax = job.ax; alt.ay = job.ay; alt.bx = job.bx; alt.by = job.by; alt.bridges = false;
+                if(alt.run()) Log.info("[abtest] without bridges: @", Strings.stripColors(alt.summary()).replace('\n', ' '));
+            }
 
             boolean first = true;
             for(BuildPlan p : job.plans){
@@ -63,7 +72,12 @@ public class ServerTest{
                 if(first && b == job.node){ b = Blocks.powerSource; first = false; }
                 Tile t = world.tile(p.x, p.y);
                 t.setBlock(b, job.team, p.rotation);
-                if(t.build != null) t.build.placed();
+                // same sequence as ConstructBlock.constructFinish for a player-built plan
+                if(t.build != null){
+                    t.build.placed();
+                    if(p.config != null) t.build.configured(null, p.config);
+                    t.build.playerPlaced(p.config);
+                }
             }
             // vault (3x3) right behind the port, outside the region
             int ex = job.portX + (dir == 0 ? 2 : dir == 2 ? -2 : 0), ey = job.portY + (dir == 1 ? 2 : dir == 3 ? -2 : 0);

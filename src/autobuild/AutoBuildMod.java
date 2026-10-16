@@ -1,13 +1,16 @@
 package autobuild;
 
 import arc.*;
+import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.input.*;
 import arc.math.*;
+import arc.math.geom.*;
 import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
+import autobuild.plan.*;
 import autobuild.plan.DrillLayoutPlanner.*;
 import mindustry.content.*;
 import mindustry.core.*;
@@ -37,11 +40,17 @@ public class AutoBuildMod extends Mod{
     final DrillFieldJob job = new DrillFieldJob();
     Seq<BuildPlan> preview;
 
+    // background planning: latest snapshot of the planner's state, drawn as gray ghosts
+    volatile boolean planning;
+    volatile Seq<BuildPlan> ghosts;
+    volatile String stage = "";
+    DrillLayoutPlanner running;
+
     public AutoBuildMod(){
         Events.on(ClientLoadEvent.class, e -> {
             ui.hudGroup.fill(t -> {
                 t.bottom().left().marginBottom(120f);
-                t.button("AutoBuild", this::toggle).size(110f, 40f).visible(() -> preview == null);
+                t.button("AutoBuild", this::toggle).size(110f, 40f).visible(() -> preview == null && !planning);
             });
             ui.hudGroup.fill(t -> {
                 t.bottom().marginBottom(120f);
@@ -51,14 +60,25 @@ public class AutoBuildMod extends Mod{
                     b.button("Cancel", Icon.cancel, () -> preview = null).size(120f, 44f);
                 }).visible(() -> preview != null);
             });
+            ui.hudGroup.fill(t -> {
+                t.bottom().marginBottom(120f);
+                t.table(Styles.black6, b -> {
+                    b.label(() -> "Planning: " + stage).padLeft(10f).padRight(10f).minWidth(260f);
+                    b.button("Cancel", Icon.cancel, this::cancelPlanning).size(120f, 44f);
+                }).visible(() -> planning);
+            });
         });
-        Events.on(WorldLoadEvent.class, e -> { preview = null; selecting = dragging = false; });
+        Events.on(WorldLoadEvent.class, e -> { cancelPlanning(); preview = null; selecting = dragging = false; });
 
         Events.run(Trigger.update, this::update);
         Events.run(Trigger.draw, this::draw);
+
+        String selftest = System.getProperty("autobuild.selftest");
+        if(selftest != null) new ClientSelfTest(this, selftest);
     }
 
     void toggle(){
+        if(planning) return;
         selecting = !selecting;
         dragging = false;
         preview = null;
@@ -161,6 +181,9 @@ public class AutoBuildMod extends Mod{
             }
         }).row();
 
+        c.check("Use item bridges (denser layouts, routes over obstacles)", job.bridges, b -> job.bridges = b)
+            .disabled(b -> !DrillFieldJob.available(Blocks.itemBridge)).row();
+
         c.add("Optimize for:").row();
         c.table(t -> {
             t.button("Max output", Styles.flatTogglet, () -> job.mode = Mode.OUTPUT).checked(b -> job.mode == Mode.OUTPUT).size(170f, 40f);
@@ -192,13 +215,54 @@ public class AutoBuildMod extends Mod{
     }
 
     void plan(){
-        if(!job.run()){
+        preview = null;
+        if(!job.prepare()){
             ui.showInfoToast("[scarlet]AutoBuild failed: " + job.error, 4f);
-            preview = null;
             return;
         }
-        preview = new Seq<>(job.plans);
-        ui.showInfoToast(job.summary(), 6f);
+        DrillLayoutPlanner planner = running = job.planner;
+        planner.listener = (st, snap) -> {
+            Seq<BuildPlan> g = new Seq<>(snap.size());
+            for(DrillLayoutPlanner.Place pl : snap) g.add(job.toPlan(pl));
+            ghosts = g;
+            stage = st;
+        };
+        ghosts = null;
+        stage = "snapshot";
+        planning = true;
+        Thread worker = new Thread(() -> {
+            try{
+                boolean ok = job.compute();
+                Core.app.post(() -> {
+                    if(running != planner) return;
+                    planning = false; ghosts = null; running = null;
+                    if(!ok){
+                        ui.showInfoToast("[scarlet]AutoBuild failed: " + job.error, 4f);
+                        return;
+                    }
+                    job.finish();
+                    preview = new Seq<>(job.plans);
+                    ui.showInfoToast(job.summary(), 6f);
+                });
+            }catch(DrillLayoutPlanner.CancelledException e){
+                Core.app.post(() -> { if(running == planner){ planning = false; ghosts = null; running = null; } });
+            }catch(Throwable e){
+                Log.err("[autobuild] planner crashed", e);
+                Core.app.post(() -> {
+                    if(running == planner){ planning = false; ghosts = null; running = null; }
+                    ui.showInfoToast("[scarlet]AutoBuild planner crashed: " + e, 5f);
+                });
+            }
+        }, "autobuild-planner");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    void cancelPlanning(){
+        if(running != null) running.cancelled = true;
+        running = null;
+        planning = false;
+        ghosts = null;
     }
 
     void commit(){
@@ -225,9 +289,35 @@ public class AutoBuildMod extends Mod{
             rect(Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1));
             Draw.reset();
         }
+        Seq<BuildPlan> g = ghosts;
+        if(planning){
+            Draw.z(Layer.overlayUI);
+            Lines.stroke(1.5f, Color.lightGray);
+            rect(job.ax, job.ay, job.bx, job.by);
+        }
+        if(planning && g != null){
+            Draw.z(Layer.plans);
+            Draw.color(0.6f, 0.6f, 0.6f, 0.55f);
+            for(BuildPlan p : g){
+                Draw.rect(p.block.fullIcon, p.drawx(), p.drawy(), p.block.rotate ? p.rotation * 90f : 0f);
+            }
+            Lines.stroke(1f, Color.gray);
+            for(BuildPlan p : g){
+                if(p.config instanceof Point2 l && (l.x != 0 || l.y != 0)){
+                    Lines.line(p.drawx(), p.drawy(), (p.x + l.x) * tilesize, (p.y + l.y) * tilesize);
+                }
+            }
+            Draw.reset();
+        }
         if(preview != null){
             Draw.z(Layer.plans);
             for(BuildPlan p : preview) p.block.drawPlan(p, preview, true);
+            Lines.stroke(1f, Pal.accent);
+            for(BuildPlan p : preview){
+                if(p.config instanceof Point2 l && (l.x != 0 || l.y != 0)){
+                    Lines.line(p.drawx(), p.drawy(), (p.x + l.x) * tilesize, (p.y + l.y) * tilesize);
+                }
+            }
             Draw.z(Layer.overlayUI);
             Lines.stroke(1.5f, Pal.accent);
             rect(job.ax, job.ay, job.bx, job.by);

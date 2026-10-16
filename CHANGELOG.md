@@ -7,6 +7,21 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+### Added
+- Item bridges ("Use item bridges" option, on by default):
+  - **Bridge lattice layout**: rows of bridge chains with drills packed around them; frees most
+    of the logistics row for drills. Chosen automatically when it beats belt lanes
+    (2x2 drills on the test field: 86% of ore covered vs 83%).
+  - **Bridge jumps in routing**: routes can hop over belts, drills and walls.
+- Planning runs on a background thread; while it runs the current state is drawn as gray
+  ghosts (keyframes at most once per frame), with a "Planning: <stage>" bar and Cancel.
+- Bridge links are drawn in the preview.
+- `selftest.sh`: automated client check (threaded planning, preview, commit, unit builds all).
+
+### Changed
+- Summary shows which layout was chosen.
+
 ## [0.3.1] - 2026-10-16
 ### Fixed
 - Which ore a drill mines now follows the game's exact rule (`Drill.countOre`): non-low-priority
@@ -43,6 +58,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.4.0]: #
 [0.3.1]: #
 [0.3.0]: #
 [0.2.0]: #

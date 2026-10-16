@@ -4,107 +4,247 @@ import autobuild.plan.DrillLayoutPlanner;
 import autobuild.plan.DrillLayoutPlanner.*;
 import java.util.*;
 
-/** Offline check: random ore blobs + walls, plan, print ASCII, verify invariants. */
+/**
+ * Offline checks for the planner: random ore fields with walls, every combination of drill size,
+ * mode, power and bridges. Each plan is validated by an independent item-flow model built from
+ * the game's accept/dump rules (see FlowCheck).
+ */
 public class PlannerTest{
+    static final int[] DU = {1, 0, -1, 0}, DV = {0, 1, 0, -1};
+
     public static void main(String[] args){
         int fails = 0;
-        for(int seed = 0; seed < 300; seed++) fails += run(seed, seed < 2 || Integer.toString((int)seed).equals(System.getProperty("show")));
+        String show = System.getProperty("show");
+        for(int seed = 0; seed < 400; seed++) fails += run(seed, seed < 2 || Integer.toString(seed).equals(show));
         fails += oreRule();
-        compareModes();
+        compare();
         System.out.println(fails == 0 ? "ALL OK" : fails + " FAILED");
         if(fails > 0) System.exit(1);
     }
 
-    static int run(long seed, boolean print){
+    static class Map{
+        int W, H;
+        boolean[][] belt, drill;
+        int[][] drop;
+    }
+
+    static Map randomMap(long seed, int s){
         Random r = new Random(seed);
-        int W = 10 + r.nextInt(40), H = 10 + r.nextInt(40), s = 2 + (int)(seed % 3);
-        Mode mode = seed % 2 == 0 ? Mode.OUTPUT : Mode.EFFICIENCY;
-        boolean power = s > 2 || seed % 5 == 0;
-        boolean[][] belt = new boolean[W][H];
-        int[][] drop = new int[W][H];
-        for(int[] row : drop) Arrays.fill(row, -1);
-        for(boolean[] row : belt) Arrays.fill(row, true);
+        Map m = new Map();
+        int W = m.W = 10 + r.nextInt(40), H = m.H = 10 + r.nextInt(40);
+        m.belt = new boolean[W][H];
+        m.drop = new int[W][H];
+        for(int[] row : m.drop) Arrays.fill(row, -1);
+        for(boolean[] row : m.belt) Arrays.fill(row, true);
         for(int b = 0; b < 4; b++){ // ore blobs: item 1 (target) and 2
             int cx = r.nextInt(W), cy = r.nextInt(H), rad = 2 + r.nextInt(6), item = b < 3 ? 1 : 2;
-            for(int x = 0; x < W; x++) for(int y = 0; y < H; y++) if((x-cx)*(x-cx)+(y-cy)*(y-cy) < rad*rad && r.nextFloat() < .85f) drop[x][y] = item;
+            for(int x = 0; x < W; x++) for(int y = 0; y < H; y++) if((x-cx)*(x-cx)+(y-cy)*(y-cy) < rad*rad && r.nextFloat() < .85f) m.drop[x][y] = item;
         }
         for(int b = 0; b < 3; b++){ // walls
             int cx = r.nextInt(W), cy = r.nextInt(H), rad = 1 + r.nextInt(3);
-            for(int x = 0; x < W; x++) for(int y = 0; y < H; y++) if(Math.abs(x-cx)+Math.abs(y-cy) < rad){ belt[x][y] = false; drop[x][y] = -1; }
+            for(int x = 0; x < W; x++) for(int y = 0; y < H; y++) if(Math.abs(x-cx)+Math.abs(y-cy) < rad){ m.belt[x][y] = false; m.drop[x][y] = -1; }
         }
-        boolean[][] drill = new boolean[W][H];
-        for(int x = 0; x + s <= W; x++) for(int y = 0; y + s <= H; y++){
+        m.drill = drillOk(m, s);
+        return m;
+    }
+
+    static boolean[][] drillOk(Map m, int s){
+        boolean[][] d = new boolean[m.W][m.H];
+        for(int x = 0; x + s <= m.W; x++) for(int y = 0; y + s <= m.H; y++){
             boolean ok = true, ore = false;
-            for(int i = 0; i < s; i++) for(int j = 0; j < s; j++){ ok &= belt[x+i][y+j]; ore |= drop[x+i][y+j] >= 0; }
-            drill[x][y] = ok && ore;
+            for(int i = 0; i < s; i++) for(int j = 0; j < s; j++){ ok &= m.belt[x+i][y+j]; ore |= m.drop[x+i][y+j] >= 0; }
+            d[x][y] = ok && ore;
         }
+        return d;
+    }
+
+    static Params params(Map m, int s, Mode mode, boolean power, boolean bridges){
         Params pa = new Params();
-        pa.W = W; pa.H = H; pa.drillSize = s; pa.beltOk = belt; pa.nodeOk = belt; pa.drillOk = drill; pa.drop = drop;
-        pa.target = 1; pa.portV = H / 2; pa.mode = mode; pa.power = power;
-        DrillLayoutPlanner p = new DrillLayoutPlanner(pa);
+        pa.W = m.W; pa.H = m.H; pa.drillSize = s; pa.beltOk = m.belt; pa.nodeOk = m.belt; pa.drillOk = m.drill; pa.drop = m.drop;
+        pa.target = 1; pa.portV = m.H / 2; pa.mode = mode; pa.power = power; pa.bridges = bridges;
+        return pa;
+    }
+
+    static int run(long seed, boolean print){
+        int s = 2 + (int)(seed % 3);
+        Map m = randomMap(seed, s);
+        Mode mode = seed % 2 == 0 ? Mode.OUTPUT : Mode.EFFICIENCY;
+        boolean power = s > 2 || seed % 5 == 0;
+        boolean bridges = seed % 4 != 3;
+        DrillLayoutPlanner p = new DrillLayoutPlanner(params(m, s, mode, power, bridges));
+        int[] snapshots = {0};
+        p.listener = (stage, snap) -> snapshots[0]++;
+        p.snapshotInterval = 0;
         long t = System.nanoTime();
         boolean ok = p.plan();
         long ms = (System.nanoTime() - t) / 1_000_000;
 
-        char[][] g = new char[W][H];
-        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++) g[x][y] = !belt[x][y] ? '#' : drop[x][y] == 1 ? '.' : drop[x][y] == 2 ? ',' : ' ';
-        String errs = "";
-        int[][] beltDir = new int[W][H];
-        for(int[] row : beltDir) Arrays.fill(row, -1);
-        for(Place pl : p.places){
-            if(pl.kind == DrillLayoutPlanner.NODE){
-                if(g[pl.u][pl.v] == '#' || g[pl.u][pl.v] == 'D' || g[pl.u][pl.v] == 'N') errs += "badnode@" + pl + " ";
-                g[pl.u][pl.v] = 'N';
-            }else if(pl.kind == DrillLayoutPlanner.DRILL){
-                if(mode == Mode.EFFICIENCY && pl.ore * 2 <= s * s) errs += "inefficient@" + pl + " ";
-                for(int i = 0; i < s; i++) for(int j = 0; j < s; j++){
-                    if(g[pl.u+i][pl.v+j] == '#' || Character.isLetter(g[pl.u+i][pl.v+j]) || "><^v".indexOf(g[pl.u+i][pl.v+j]) >= 0) errs += "overlap@" + pl + " ";
-                    g[pl.u+i][pl.v+j] = 'D';
-                }
-            }else{
-                if(!belt[pl.u][pl.v] || g[pl.u][pl.v] == 'D' || beltDir[pl.u][pl.v] >= 0) errs += "badbelt@" + pl + " ";
-                g[pl.u][pl.v] = ">^<v".charAt(pl.dir);
-                beltDir[pl.u][pl.v] = pl.dir;
-            }
-        }
-        // every belt must flow (following dirs) to the port and out
-        int[] DU = {1,0,-1,0}, DV = {0,1,0,-1};
-        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++) if(beltDir[x][y] >= 0){
-            int u = x, v = y, steps = 0;
-            while(true){
-                int d = beltDir[u][v];
-                int nu = u + DU[d], nv = v + DV[d];
-                if(nu == W && v == p.port) break;
-                if(nu < 0 || nv < 0 || nu >= W || nv >= H || beltDir[nu][nv] < 0){ errs += "deadend@(" + u + "," + v + ") "; break; }
-                if(beltDir[nu][nv] == (d + 2) % 4){ errs += "headon@(" + u + "," + v + ") "; break; }
-                u = nu; v = nv;
-                if(++steps > W * H){ errs += "loop@(" + x + "," + y + ") "; break; }
-            }
-        }
-        // every drill must touch a belt
-        for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.DRILL){
-            boolean touch = false;
-            for(int i = -1; i <= s; i++) for(int j = -1; j <= s; j++){
-                int x = pl.u + i, y = pl.v + j;
-                boolean edge = (i == -1 || i == s) != (j == -1 || j == s);
-                if(edge && x >= 0 && y >= 0 && x < W && y < H && beltDir[x][y] >= 0) touch = true;
-            }
-            if(!touch) errs += "isolated@" + pl + " ";
-            if(power){
-                boolean pow = false;
-                for(Place n : p.places) if(n.kind == DrillLayoutPlanner.NODE && reach(n.u, n.v, pl.u, pl.v, s)) pow = true;
-                if(!pow) errs += "unpowered@" + pl + " ";
-            }
-        }
-        if(power && p.drills > 0 && p.powerGroups > 1) System.out.println("note seed " + seed + ": " + p.powerGroups + " power groups");
-
+        String errs = ok ? FlowCheck.check(m, s, p, power) : "";
+        if(ok && snapshots[0] == 0) errs += "no progress snapshots ";
         if(print || !errs.isEmpty()){
-            System.out.println("seed " + seed + " " + W + "x" + H + " ok=" + ok + " " + (ok ? "" : p.failure) + " drills=" + p.drills + " ore=" + p.oreTiles
-                + " s=" + s + " " + mode + " power=" + power + " nodes=" + p.nodes + " routed=" + p.segmentsRouted + " dropped=" + p.segmentsDropped + " port=" + p.port + " " + ms + "ms");
-            for(int y = H - 1; y >= 0; y--){ StringBuilder sb = new StringBuilder(); for(int x = 0; x < W; x++) sb.append(g[x][y]); System.out.println(sb + (y == p.port ? "  <- port (exit right)" : "")); }
+            System.out.println("seed " + seed + " " + m.W + "x" + m.H + " s=" + s + " " + mode + " power=" + power + " bridges=" + bridges
+                + " ok=" + ok + (ok ? "" : " " + p.failure) + " layout=" + p.layout + " drills=" + p.drills + " ore=" + p.oreTiles
+                + " belts=" + p.belts + " bridges=" + p.bridges + " nodes=" + p.nodes + " routed=" + p.segmentsRouted
+                + " dropped=" + p.segmentsDropped + " " + ms + "ms");
+            print(m, s, p);
         }
         if(!errs.isEmpty()){ System.out.println("ERRORS: " + errs); return 1; }
         return 0;
+    }
+
+    static void print(Map m, int s, DrillLayoutPlanner p){
+        char[][] g = new char[m.W][m.H];
+        for(int x = 0; x < m.W; x++) for(int y = 0; y < m.H; y++) g[x][y] = !m.belt[x][y] ? '#' : m.drop[x][y] == 1 ? '.' : m.drop[x][y] == 2 ? ',' : ' ';
+        for(Place pl : p.places){
+            if(pl.kind == DrillLayoutPlanner.DRILL){ for(int i = 0; i < s; i++) for(int j = 0; j < s; j++) g[pl.u+i][pl.v+j] = 'D'; }
+            else if(pl.kind == DrillLayoutPlanner.BELT) g[pl.u][pl.v] = ">^<v".charAt(pl.dir);
+            else if(pl.kind == DrillLayoutPlanner.NODE) g[pl.u][pl.v] = 'N';
+            else g[pl.u][pl.v] = pl.lu == pl.u && pl.lv == pl.v ? 'E' : "RTLB".charAt(dirOf(pl.lu - pl.u, pl.lv - pl.v));
+        }
+        for(int y = m.H - 1; y >= 0; y--){
+            StringBuilder sb = new StringBuilder();
+            for(int x = 0; x < m.W; x++) sb.append(g[x][y]);
+            System.out.println(sb + (y == p.port ? "  <- port" : ""));
+        }
+    }
+
+    static int dirOf(int dx, int dy){ return dx > 0 ? 0 : dy > 0 ? 1 : dx < 0 ? 2 : 3; }
+
+    /** Independent model of item movement using the game's rules (ItemBridge / Conveyor / Drill). */
+    static class FlowCheck{
+        static final int SINK = 0;
+
+        static String check(Map m, int s, DrillLayoutPlanner p, boolean power){
+            StringBuilder err = new StringBuilder();
+            int W = m.W, H = m.H;
+            int[][] ent = new int[W][H];
+            List<Place> ents = new ArrayList<>();
+            ents.add(null); // SINK
+            for(Place pl : p.places){
+                int id = ents.size();
+                ents.add(pl);
+                int size = pl.kind == DrillLayoutPlanner.DRILL ? s : 1;
+                for(int i = 0; i < size; i++) for(int j = 0; j < size; j++){
+                    int x = pl.u + i, y = pl.v + j;
+                    if(x >= W || y >= H){ err.append("outside@").append(pl).append(' '); continue; }
+                    if(ent[x][y] != 0) err.append("overlap@").append(pl).append(' ');
+                    if(!m.belt[x][y]) err.append("onwall@").append(pl).append(' ');
+                    ent[x][y] = id;
+                }
+                if(pl.kind == DrillLayoutPlanner.BRIDGE && !(pl.lu == pl.u && pl.lv == pl.v)){
+                    int dx = pl.lu - pl.u, dy = pl.lv - pl.v;
+                    if((dx != 0 && dy != 0) || Math.abs(dx + dy) > 4) err.append("badlink@").append(pl).append(' ');
+                }
+            }
+            if(err.length() > 0) return err.toString();
+
+            int n = ents.size();
+            List<List<Integer>> out = new ArrayList<>();
+            for(int i = 0; i < n; i++) out.add(new ArrayList<>());
+            for(int id = 1; id < n; id++){
+                Place pl = ents.get(id);
+                switch(pl.kind){
+                    case DrillLayoutPlanner.DRILL:
+                        for(int i = 0; i < s; i++){
+                            int[][] adj = {{pl.u + s, pl.v + i, 2}, {pl.u - 1, pl.v + i, 0}, {pl.u + i, pl.v + s, 3}, {pl.u + i, pl.v - 1, 1}};
+                            // {x, y, face of the target that looks at the drill}
+                            for(int[] a : adj) addIfAccepts(m, ent, ents, out, id, a[0], a[1], a[2], s);
+                        }
+                        break;
+                    case DrillLayoutPlanner.BELT: {
+                        int fx = pl.u + DU[pl.dir], fy = pl.v + DV[pl.dir];
+                        if(fx == W && pl.v == p.port && pl.dir == 0) out.get(id).add(SINK);
+                        else addIfAccepts(m, ent, ents, out, id, fx, fy, (pl.dir + 2) % 4, s);
+                        break;
+                    }
+                    case DrillLayoutPlanner.BRIDGE:
+                        if(pl.lu != pl.u || pl.lv != pl.v){
+                            int t = ent[pl.lu][pl.lv];
+                            if(t == 0 || ents.get(t).kind != DrillLayoutPlanner.BRIDGE) err.append("linkToNothing@").append(pl).append(' ');
+                            else out.get(id).add(t);
+                        }else{
+                            // end bridge: dumps everywhere except toward incoming bridges
+                            Set<Integer> inDirs = new HashSet<>();
+                            for(Place o : p.places) if(o.kind == DrillLayoutPlanner.BRIDGE && o.lu == pl.u && o.lv == pl.v && !(o.u == pl.u && o.v == pl.v)){
+                                inDirs.add(dirOf(o.u - pl.u, o.v - pl.v));
+                            }
+                            for(int d = 0; d < 4; d++){
+                                if(inDirs.contains(d)) continue;
+                                addIfAccepts(m, ent, ents, out, id, pl.u + DU[d], pl.v + DV[d], (d + 2) % 4, s);
+                            }
+                        }
+                        break;
+                    default: break;
+                }
+            }
+
+            // every drill outputs; everything a drill can reach can reach the sink; no cycles
+            List<List<Integer>> in = new ArrayList<>();
+            for(int i = 0; i < n; i++) in.add(new ArrayList<>());
+            for(int a = 0; a < n; a++) for(int b : out.get(a)) in.get(b).add(a);
+            boolean[] toSink = new boolean[n];
+            ArrayDeque<Integer> q = new ArrayDeque<>();
+            q.add(SINK); toSink[SINK] = true;
+            while(!q.isEmpty()) for(int a : in.get(q.poll())) if(!toSink[a]){ toSink[a] = true; q.add(a); }
+            boolean[] reach = new boolean[n];
+            for(int id = 1; id < n; id++){
+                Place pl = ents.get(id);
+                if(pl.kind != DrillLayoutPlanner.DRILL) continue;
+                if(out.get(id).isEmpty()) err.append("drillNoOutput@").append(pl).append(' ');
+                if(!reach[id]){ reach[id] = true; q.add(id); }
+            }
+            while(!q.isEmpty()) for(int b : out.get(q.poll())) if(!reach[b]){ reach[b] = true; q.add(b); }
+            for(int id = 1; id < n; id++) if(reach[id] && !toSink[id]) err.append("stuck@").append(ents.get(id)).append(' ');
+            if(hasCycle(out, reach)) err.append("cycle ");
+
+            if(power){
+                for(Place d : p.places) if(d.kind == DrillLayoutPlanner.DRILL){
+                    boolean pow = false;
+                    for(Place nd : p.places) if(nd.kind == DrillLayoutPlanner.NODE && reach(nd.u, nd.v, d.u, d.v, s)) pow = true;
+                    if(!pow) err.append("unpowered@").append(d).append(' ');
+                }
+                if(p.drills > 0 && p.powerGroups > 1) err.append("powerGroups=").append(p.powerGroups).append(' ');
+            }
+            return err.toString();
+        }
+
+        /** source `src` offers an item to whatever is at (x,y); face = side of the target facing the source. */
+        static void addIfAccepts(Map m, int[][] ent, List<Place> ents, List<List<Integer>> out, int src, int x, int y, int face, int s){
+            if(x < 0 || y < 0 || x >= m.W || y >= m.H) return;
+            int t = ent[x][y];
+            if(t == 0 || t == src) return;
+            Place tp = ents.get(t), sp = ents.get(src);
+            boolean ok;
+            switch(tp.kind){
+                case DrillLayoutPlanner.BELT: ok = face != tp.dir; break; // conveyors refuse items from their front
+                case DrillLayoutPlanner.BRIDGE:
+                    boolean linkedIn = sp.kind == DrillLayoutPlanner.BRIDGE && sp.lu == tp.u && sp.lv == tp.v;
+                    boolean end = tp.lu == tp.u && tp.lv == tp.v;
+                    ok = linkedIn || (!end && face != dirOf(tp.lu - tp.u, tp.lv - tp.v));
+                    break;
+                default: ok = false;
+            }
+            if(ok && !out.get(src).contains(t)) out.get(src).add(t);
+        }
+
+        static boolean hasCycle(List<List<Integer>> out, boolean[] reach){
+            int n = out.size();
+            int[] state = new int[n];
+            for(int i = 0; i < n; i++){
+                if(!reach[i] || state[i] != 0) continue;
+                Deque<int[]> st = new ArrayDeque<>();
+                st.push(new int[]{i, 0}); state[i] = 1;
+                while(!st.isEmpty()){
+                    int[] top = st.peek();
+                    if(top[1] < out.get(top[0]).size()){
+                        int b = out.get(top[0]).get(top[1]++);
+                        if(state[b] == 1) return true;
+                        if(state[b] == 0){ state[b] = 1; st.push(new int[]{b, 0}); }
+                    }else{ state[top[0]] = 2; st.pop(); }
+                }
+            }
+            return false;
+        }
     }
 
     static boolean reach(int nu, int nv, int x, int y, int size){
@@ -112,38 +252,6 @@ public class PlannerTest{
         float x0 = x - 0.5f, x1 = x + size - 0.5f, y0 = y - 0.5f, y1 = y + size - 0.5f;
         float dx = Math.max(0, Math.max(x0 - nu, nu - x1)), dy = Math.max(0, Math.max(y0 - nv, nv - y1));
         return dx * dx + dy * dy <= r * r;
-    }
-
-    /** Fixed irregular ore field: compare old periodic layout baseline vs both modes. */
-    static void compareModes(){
-        int W = 40, H = 30;
-        boolean[][] belt = new boolean[W][H];
-        int[][] drop = new int[W][H];
-        Random r = new Random(42);
-        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
-            belt[x][y] = true;
-            double d = Math.hypot((x - 18) / 1.6, y - 15) + 3 * Math.sin(x * 0.7) + 2 * Math.cos(y * 0.9);
-            drop[x][y] = d < 11 && r.nextFloat() < 0.9 ? 1 : -1;
-        }
-        int total = 0; for(int[] c : drop) for(int v : c) if(v == 1) total++;
-        for(int s = 2; s <= 3; s++){
-            boolean[][] drill = new boolean[W][H];
-            for(int x = 0; x + s <= W; x++) for(int y = 0; y + s <= H; y++){
-                boolean ore = false;
-                for(int i = 0; i < s; i++) for(int j = 0; j < s; j++) ore |= drop[x+i][y+j] >= 0;
-                drill[x][y] = ore;
-            }
-            for(Mode m : Mode.values()){
-                Params pa = new Params();
-                pa.W = W; pa.H = H; pa.drillSize = s; pa.beltOk = belt; pa.nodeOk = belt; pa.drillOk = drill; pa.drop = drop;
-                pa.target = 1; pa.portV = H / 2; pa.mode = m; pa.power = s == 3;
-                DrillLayoutPlanner p = new DrillLayoutPlanner(pa);
-                p.plan();
-                int belts = 0; for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.BELT) belts++;
-                System.out.printf("compare s=%d %-10s ore covered %3d/%d (%.0f%%)  drills=%3d belts=%3d nodes=%2d  ore/drill=%.2f%n",
-                    s, m, p.oreTiles, total, 100.0 * p.oreTiles / total, p.drills, belts, p.nodes, (double)p.oreTiles / Math.max(1, p.drills));
-            }
-        }
     }
 
     /** Drill.countOre order: (not lowPriority, count, id). Items: 0 copper, 1 lead, 5 sand(low). */
@@ -165,13 +273,43 @@ public class PlannerTest{
             Params pa = new Params();
             pa.W = 4; pa.H = 3; pa.drillSize = 2; pa.target = c[1][0]; pa.lowPriority = low;
             pa.drop = new int[4][3];
-            for(int[] row : pa.drop) java.util.Arrays.fill(row, -1);
+            for(int[] row : pa.drop) Arrays.fill(row, -1);
             pa.drop[0][0] = c[0][0]; pa.drop[1][0] = c[0][1]; pa.drop[0][1] = c[0][2]; pa.drop[1][1] = c[0][3];
             pa.drillOk = new boolean[4][3]; pa.drillOk[0][0] = true;
             int got = new DrillLayoutPlanner(pa).oreUnder(0, 0);
-            if(got != c[2][0]){ System.out.println("ore rule FAIL " + java.util.Arrays.toString(c[0]) + " target " + c[1][0] + ": got " + got + " want " + c[2][0]); bad++; }
+            if(got != c[2][0]){ System.out.println("ore rule FAIL " + Arrays.toString(c[0]) + " target " + c[1][0] + ": got " + got + " want " + c[2][0]); bad++; }
         }
         System.out.println("ore rule: " + (cases.length - bad) + "/" + cases.length + " ok");
         return bad;
+    }
+
+    /** Fixed irregular ore field: lanes only vs with bridges, both modes. */
+    static void compare(){
+        Map m = new Map();
+        int W = m.W = 40, H = m.H = 30;
+        m.belt = new boolean[W][H];
+        m.drop = new int[W][H];
+        Random r = new Random(42);
+        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
+            m.belt[x][y] = true;
+            double d = Math.hypot((x - 18) / 1.6, y - 15) + 3 * Math.sin(x * 0.7) + 2 * Math.cos(y * 0.9);
+            m.drop[x][y] = d < 11 && r.nextFloat() < 0.9 ? 1 : -1;
+        }
+        int total = 0; for(int[] c : m.drop) for(int v : c) if(v == 1) total++;
+        for(int s = 2; s <= 4; s++){
+            m.drill = drillOk(m, s);
+            for(Mode mode : Mode.values()){
+                for(boolean br : new boolean[]{false, true}){
+                    DrillLayoutPlanner p = new DrillLayoutPlanner(params(m, s, mode, s > 2, br));
+                    long t = System.nanoTime();
+                    p.plan();
+                    String errs = FlowCheck.check(m, s, p, s > 2);
+                    System.out.printf("compare s=%d %-10s bridges=%-5s ore %3d/%d (%2.0f%%) drills=%3d belts=%3d bridges=%3d nodes=%2d ore/drill=%.2f %-20s %4dms %s%n",
+                        s, mode, br, p.oreTiles, total, 100.0 * p.oreTiles / total, p.drills, p.belts, p.bridges, p.nodes,
+                        (double)p.oreTiles / Math.max(1, p.drills), p.layout, (System.nanoTime() - t) / 1_000_000, errs.isEmpty() ? "" : "ERR " + errs);
+                    if(s == 2 && mode == Mode.OUTPUT && br && System.getProperty("showcompare") != null) print(m, s, p);
+                }
+            }
+        }
     }
 }
