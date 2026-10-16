@@ -7,6 +7,22 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-16
+### Added
+- **Water boost**: "Water boost" option with water port side (any side but the output),
+  position, and conduit type (conduit / pulse conduit).
+  - Layout reserves water rows next to drill bands (water rows and item lanes alternate), valued
+    at the boosted rate (x2.56 for mechanical/pneumatic/laser/airblast drills).
+  - Water network: port liquid router, A* legs (conduits + bridge-conduit jumps) along a reserved
+    corridor to a router at each water row, routers in each row next to its drills.
+  - Falls back to the best dry layout if the water network wouldn't pay off.
+  - Summary: watered drills and water demand at the port; blue marker at the water port.
+- Server test options as `key=value` (`size=`, `belt=`, `nobridge`, `water=SIDE[:FRAC]`, `conduit=`),
+  liquid source placed at the water port; `selftest.sh map:water`.
+
+### Fixed
+- Liquid model: an unlinked bridge conduit does not output back toward its incoming bridge.
+
 ## [0.4.0] - 2026-10-16
 ### Added
 - Item bridges ("Use item bridges" option, on by default):
@@ -58,6 +74,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.5.0]: #
 [0.4.0]: #
 [0.3.1]: #
 [0.3.0]: #

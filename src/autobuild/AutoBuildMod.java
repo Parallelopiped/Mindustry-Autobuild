@@ -184,6 +184,35 @@ public class AutoBuildMod extends Mod{
         c.check("Use item bridges (denser layouts, routes over obstacles)", job.bridges, b -> job.bridges = b)
             .disabled(b -> !DrillFieldJob.available(Blocks.itemBridge)).row();
 
+        Seq<Block> conduits = Seq.with(Blocks.conduit, Blocks.pulseConduit).select(DrillFieldJob::available);
+        if(!conduits.contains(job.conduit) && !conduits.isEmpty()) job.conduit = conduits.first();
+        c.table(t -> {
+            t.check("Water boost", job.water, b -> job.water = b)
+                .disabled(b -> job.drill == null || DrillFieldJob.waterBoost(job.drill) == null || !DrillFieldJob.waterAvailable(job.conduit)).padRight(10f);
+            t.label(() -> job.drill == null || DrillFieldJob.waterBoost(job.drill) == null ? "" :
+                "[lightgray]x" + Strings.autoFixed(job.drill.liquidBoostIntensity * job.drill.liquidBoostIntensity, 2) + " speed, "
+                + Strings.autoFixed(DrillFieldJob.waterBoost(job.drill).amount * 60f, 1) + " water/s per drill");
+        }).row();
+        c.table(t -> {
+            t.add("Water from: ");
+            for(int i = 0; i < 4; i++){
+                int dir = i;
+                t.button(DrillFieldJob.dirNames[i], Styles.flatTogglet, () -> job.waterDir = dir).checked(b -> job.waterDir == dir)
+                    .disabled(b -> !job.water || job.outDir == dir).size(90f, 36f);
+            }
+            for(Block b : conduits){
+                t.button(bt -> bt.image(b.uiIcon).size(24f), Styles.flatTogglet, () -> job.conduit = b).checked(bt -> job.conduit == b)
+                    .disabled(bt -> !job.water).size(40f, 36f).padLeft(4f).tooltip(b.localizedName);
+            }
+        }).row();
+        c.table(t -> {
+            Label l = new Label("");
+            t.add("Water port position: ");
+            t.slider(0f, 1f, 0.01f, job.waterFrac, v -> job.waterFrac = v).width(220f).disabled(s -> !job.water);
+            t.add(l).padLeft(8f);
+            l.update(() -> l.setText(Mathf.round(job.waterFrac * 100) + "%"));
+        }).row();
+
         c.add("Optimize for:").row();
         c.table(t -> {
             t.button("Max output", Styles.flatTogglet, () -> job.mode = Mode.OUTPUT).checked(b -> job.mode == Mode.OUTPUT).size(170f, 40f);
@@ -194,7 +223,10 @@ public class AutoBuildMod extends Mod{
         c.table(t -> {
             for(int i = 0; i < 4; i++){
                 int dir = i;
-                t.button(DrillFieldJob.dirNames[i], Styles.flatTogglet, () -> job.outDir = dir).checked(b -> job.outDir == dir).size(100f, 40f);
+                t.button(DrillFieldJob.dirNames[i], Styles.flatTogglet, () -> {
+                    job.outDir = dir;
+                    if(job.waterDir == dir) job.waterDir = (dir + 2) % 4;
+                }).checked(b -> job.outDir == dir).size(100f, 40f);
             }
         }).row();
 
@@ -325,11 +357,22 @@ public class AutoBuildMod extends Mod{
             float px = job.portX * tilesize, py = job.portY * tilesize, ang = job.outDir * 90f;
             Draw.color(Pal.remove);
             Lines.square(px, py, tilesize / 2f + 1f);
-            Fill.tri(px + Angles.trnsx(ang, 12f), py + Angles.trnsy(ang, 12f),
-                px + Angles.trnsx(ang + 90f, 4f) + Angles.trnsx(ang, 6f), py + Angles.trnsy(ang + 90f, 4f) + Angles.trnsy(ang, 6f),
-                px + Angles.trnsx(ang - 90f, 4f) + Angles.trnsx(ang, 6f), py + Angles.trnsy(ang - 90f, 4f) + Angles.trnsy(ang, 6f));
+            arrow(px, py, ang);
+            if(job.waterPortX >= 0){
+                // water port: arrow pointing into the region
+                float wx = job.waterPortX * tilesize, wy = job.waterPortY * tilesize, wa = job.waterDir * 90f + 180f;
+                Draw.color(Pal.water);
+                Lines.square(wx, wy, tilesize / 2f + 1f);
+                arrow(wx - Angles.trnsx(wa, 12f), wy - Angles.trnsy(wa, 12f), wa);
+            }
             Draw.reset();
         }
+    }
+
+    static void arrow(float px, float py, float ang){
+        Fill.tri(px + Angles.trnsx(ang, 12f), py + Angles.trnsy(ang, 12f),
+            px + Angles.trnsx(ang + 90f, 4f) + Angles.trnsx(ang, 6f), py + Angles.trnsy(ang + 90f, 4f) + Angles.trnsy(ang, 6f),
+            px + Angles.trnsx(ang - 90f, 4f) + Angles.trnsx(ang, 6f), py + Angles.trnsy(ang - 90f, 4f) + Angles.trnsy(ang, 6f));
     }
 
     // ---------------------------------------------------------------- headless test

@@ -1,5 +1,7 @@
 package autobuild;
 
+import arc.math.geom.*;
+import arc.struct.*;
 import arc.util.*;
 import autobuild.plan.DrillLayoutPlanner.*;
 import mindustry.content.*;
@@ -28,20 +30,41 @@ public class ServerTest{
     static float predicted;
 
     static void register(CommandHandler handler){
-        handler.register("abtest", "<item> <drill> <dir> <mode> [size] [belt] [nobridge]", "AutoBuild: plan and instantly place a drill field", args -> {
+        handler.register("abtest", "<item> <drill> <dir> <mode> [options...]", "AutoBuild: plan and place a drill field. options: size=N belt=NAME nobridge water=SIDE[:FRAC] conduit=NAME", args -> {
             if(!state.isGame()){ Log.err("host a map first"); return; }
             Item item = content.item(args[0]);
             Block drill = content.block(args[1]);
             int dir = "ENWS".indexOf(Character.toUpperCase(args[2].charAt(0)));
-            int size = args.length > 4 ? Strings.parseInt(args[4], 30) : 30;
-            Block belt = args.length > 5 ? content.block(args[5]) : Blocks.conveyor;
-            boolean bridges = args.length <= 6 || !args[6].equals("nobridge");
+            int size = 30;
+            Block belt = Blocks.conveyor, conduit = Blocks.conduit;
+            boolean bridges = true;
+            int waterDir = -1;
+            float waterFrac = 0.5f;
+            // a variadic "[options...]" parameter arrives as one space-joined string
+            Seq<String> opts = new Seq<>();
+            for(int i = 4; i < args.length; i++) for(String o : args[i].trim().split("\\s+")) if(!o.isEmpty()) opts.add(o);
+            for(String opt : opts){
+                String[] kv = opt.split("=", 2);
+                switch(kv[0]){
+                    case "size": size = Strings.parseInt(kv[1], 30); break;
+                    case "belt": belt = content.block(kv[1]); break;
+                    case "conduit": conduit = content.block(kv[1]); break;
+                    case "nobridge": bridges = false; break;
+                    case "water":
+                        String[] wf = kv[1].split(":");
+                        waterDir = "ENWS".indexOf(Character.toUpperCase(wf[0].charAt(0)));
+                        if(wf.length > 1) waterFrac = Strings.parseFloat(wf[1], 0.5f);
+                        break;
+                    default: Log.err("unknown option @", opt); return;
+                }
+            }
             if(item == null || !(drill instanceof Drill) || dir < 0 || belt == null){ Log.err("bad arguments"); return; }
 
             DrillFieldJob job = new DrillFieldJob();
             job.drill = (Drill)drill; job.target = item; job.outDir = dir; job.belt = belt;
             job.mode = args[3].startsWith("e") ? Mode.EFFICIENCY : Mode.OUTPUT;
             job.bridges = bridges;
+            job.water = waterDir >= 0; job.waterDir = Math.max(waterDir, 0); job.waterFrac = waterFrac; job.conduit = conduit;
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
             if(!job.run()){
@@ -63,7 +86,7 @@ public class ServerTest{
                 DrillFieldJob alt = new DrillFieldJob();
                 alt.drill = job.drill; alt.target = job.target; alt.outDir = job.outDir; alt.belt = job.belt; alt.mode = job.mode;
                 alt.ax = job.ax; alt.ay = job.ay; alt.bx = job.bx; alt.by = job.by; alt.bridges = false;
-                if(alt.run()) Log.info("[abtest] without bridges: @", Strings.stripColors(alt.summary()).replace('\n', ' '));
+                if(alt.run()) Log.info("[abtest] baseline (no bridges, no water): @", Strings.stripColors(alt.summary()).replace('\n', ' '));
             }
 
             boolean first = true;
@@ -84,6 +107,15 @@ public class ServerTest{
             Tile vt = world.tile(ex, ey);
             if(vt == null){ Log.err("no room for the vault"); return; }
             vt.setBlock(Blocks.vault, job.team, 0);
+            if(job.waterPortX >= 0){
+                // infinite water right outside the water port
+                Tile st = world.tile(job.waterPortX + Geometry.d4x(job.waterDir), job.waterPortY + Geometry.d4y(job.waterDir));
+                if(st != null){
+                    st.setBlock(Blocks.liquidSource, job.team, 0);
+                    st.build.configured(null, Liquids.water);
+                    Log.info("[abtest] water source at (@,@)", st.x, st.y);
+                }
+            }
             vault = vt.build;
             lastCount = 0; lastTime = Time.millis(); predicted = Math.min(job.itemsPerSecond, job.beltCapacity);
             Log.info("[abtest] placed @ blocks, vault at (@,@), predicted @/s", job.plans.size, ex, ey, Strings.autoFixed(predicted, 2));

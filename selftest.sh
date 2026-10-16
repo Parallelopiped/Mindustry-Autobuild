@@ -1,6 +1,6 @@
 #!/bin/sh
 # Automated client check (needs a display): sandbox game, threaded planning with gray preview,
-# commit, unit builds everything, PASS/FAIL in the log. Usage: ./selftest.sh [map]
+# commit, unit builds everything, PASS/FAIL in the log. Usage: ./selftest.sh [map[:water]]
 set -e
 cd "$(dirname "$0")"
 JAVA_HOME=~/jdk17 ./gradlew jar --no-daemon -q

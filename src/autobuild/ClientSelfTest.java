@@ -14,7 +14,7 @@ import mindustry.world.blocks.production.*;
 import static mindustry.Vars.*;
 
 /**
- * Automated client check, enabled with -Dautobuild.selftest=&lt;map&gt;: starts a sandbox game,
+ * Automated client check, enabled with -Dautobuild.selftest=&lt;map&gt;[:water]: starts a sandbox game,
  * selects the densest copper window, runs the threaded planner (counting gray-preview frames),
  * commits the plan, lets the player's unit build it, then reports and exits.
  */
@@ -27,9 +27,14 @@ public class ClientSelfTest{
     float timer;
     int planned;
 
-    ClientSelfTest(AutoBuildMod mod, String mapName){
+    final boolean water;
+
+    /** spec: "&lt;map&gt;" or "&lt;map&gt;:water" */
+    ClientSelfTest(AutoBuildMod mod, String spec){
         this.mod = mod;
-        this.mapName = mapName;
+        String[] parts = spec.split(":");
+        this.mapName = parts[0];
+        this.water = parts.length > 1 && parts[1].equals("water");
         Events.on(ClientLoadEvent.class, e -> Time.runTask(30f, this::start));
         Events.run(Trigger.update, this::update);
     }
@@ -62,6 +67,19 @@ public class ClientSelfTest{
                     job.outDir = 0;
                     job.bridges = true;
                     job.mode = Mode.OUTPUT;
+                    job.water = water;
+                    job.waterDir = 2;
+                    job.waterFrac = 0.5f;
+                    // pick a water side whose edge has buildable tiles (ore is randomized per load)
+                    for(int side : new int[]{2, 1, 3}){
+                        int ok = 0;
+                        for(int i = 0; i <= 20; i++){
+                            int[] e = job.edgeTile(side, i / 20f);
+                            if(mindustry.world.Build.validPlace(Blocks.conduit, job.team, e[0], e[1], 0)) ok++;
+                        }
+                        if(ok >= 5){ job.waterDir = side; break; }
+                    }
+                    job.conduit = Blocks.conduit;
                     Log.info("[selftest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
                     mod.plan();
                     phase = 2;
