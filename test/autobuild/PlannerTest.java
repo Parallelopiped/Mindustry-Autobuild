@@ -192,7 +192,7 @@ public class PlannerTest{
                 for(int i = 0; i < size; i++) for(int j = 0; j < size; j++){
                     int x = pl.u + i, y = pl.v + j;
                     if(x >= W || y >= H){ err.append("outside@").append(pl).append(' '); continue; }
-                    if(ent[x][y] != 0) err.append("overlap@").append(pl).append(' ');
+                    if(ent[x][y] != 0) err.append("overlap@").append(pl).append(" with ").append(ents.get(ent[x][y])).append(' ');
                     if(!m.belt[x][y]) err.append("onwall@").append(pl).append(' ');
                     ent[x][y] = id;
                 }

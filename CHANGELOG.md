@@ -7,6 +7,28 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-17
+### Added
+- **Drill-first layout family**: repeatedly picks the drill (any type) with the best
+  value minus connection cost and builds it together with its connection, found by one
+  multi-start search from all candidates' neighbour tiles at once; drills already touching the
+  network are attached for free. With water, each drill is then connected to the water network on
+  its own (liquid A* to a router next to it).
+- **Gap filling** for every layout: after routing, drills of any type are added on free tiles that
+  already touch a belt or linked bridge.
+- **Shared corridors**: tiles under an existing bridge link are cheap for the other kind of bridge,
+  so item and liquid bridge chains interleave on one line (`=R  =R  =R`).
+
+### Changed
+- Every layout family (belt lanes, bridge lattice, water rows, drill-first) now runs through the full
+  pipeline (routing, filling, water, power) and the best final score wins.
+- Over 480 random fields vs 0.7.0: output +0.5–2.2% without water and +1.4–7.1% with water;
+  logistics tiles per output -2% to -16%.
+
+### Fixed
+- A* states carry direction / landed-bridge, so a single route could cross itself (two blocks on
+  one tile); such routes are now rejected and searched again.
+
 ## [0.7.0] - 2026-10-17
 ### Added
 - **Mixed drill tiers** ("Fill gaps with smaller drills", on by default): for every smaller size,
@@ -123,6 +145,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.8.0]: #
 [0.7.0]: #
 [0.6.0]: #
 [0.5.1]: #
