@@ -21,6 +21,7 @@ public class PlannerTest{
             + variantsBetter + " alternatives scored >5% above the default plan");
         fails += oreRule();
         fails += waterAroundWall();
+        fails += outputsAndCapacity();
         mixGain();
         logisticsEfficiency();
         compare();
@@ -169,7 +170,7 @@ public class PlannerTest{
         for(int y = m.H - 1; y >= 0; y--){
             StringBuilder sb = new StringBuilder();
             for(int x = 0; x < m.W; x++) sb.append(g[x][y]);
-            System.out.println(sb + (y == p.port ? "  <- port" : ""));
+            System.out.println(sb + (FlowCheck.isSink(p, m.W, y) ? "  <- out" : ""));
         }
     }
 
@@ -180,6 +181,7 @@ public class PlannerTest{
         static final int SINK = 0;
 
         static String check(Map m, int s, DrillLayoutPlanner p, boolean power){
+            mapW = m.W; mapH = m.H;
             StringBuilder err = new StringBuilder();
             int W = m.W, H = m.H;
             int[][] ent = new int[W][H];
@@ -194,6 +196,7 @@ public class PlannerTest{
                     if(x >= W || y >= H){ err.append("outside@").append(pl).append(' '); continue; }
                     if(ent[x][y] != 0) err.append("overlap@").append(pl).append(" with ").append(ents.get(ent[x][y])).append(' ');
                     if(!m.belt[x][y]) err.append("onwall@").append(pl).append(' ');
+                    if(FlowCheck.isSink(p, x, y)) err.append("onSink@").append(pl).append(' ');
                     ent[x][y] = id;
                 }
                 if(pl.kind == DrillLayoutPlanner.BRIDGE && !(pl.lu == pl.u && pl.lv == pl.v)){
@@ -219,7 +222,7 @@ public class PlannerTest{
                         break;
                     case DrillLayoutPlanner.BELT: {
                         int fx = pl.u + DU[pl.dir], fy = pl.v + DV[pl.dir];
-                        if(fx == W && pl.v == p.port && pl.dir == 0) out.get(id).add(SINK);
+                        if(isSink(p, fx, fy)) out.get(id).add(SINK);
                         else addIfAccepts(m, ent, ents, out, id, fx, fy, (pl.dir + 2) % 4, s);
                         break;
                     }
@@ -236,6 +239,7 @@ public class PlannerTest{
                             }
                             for(int d = 0; d < 4; d++){
                                 if(inDirs.contains(d)) continue;
+                                if(isSink(p, pl.u + DU[d], pl.v + DV[d])){ out.get(id).add(SINK); continue; }
                                 addIfAccepts(m, ent, ents, out, id, pl.u + DU[d], pl.v + DV[d], (d + 2) % 4, s);
                             }
                         }
@@ -276,15 +280,30 @@ public class PlannerTest{
             return err.toString();
         }
 
+        static int reserve, mapW, mapH;
+        static int widthOf(DrillLayoutPlanner p){ return mapW; }
+        static int heightOf(DrillLayoutPlanner p){ return mapH; }
+        static boolean isSink(DrillLayoutPlanner p, int x, int y){
+            for(int[] s0 : p.sinkList){
+                boolean inside = s0[0] >= 0 && s0[1] >= 0 && s0[0] < widthOf(p) && s0[1] < heightOf(p);
+                int r = inside ? reserve : 0;
+                if(Math.abs(s0[0] - x) <= r && Math.abs(s0[1] - y) <= r) return true;
+            }
+            return false;
+        }
+
         /** Liquid model: every drill flagged wet must be reachable from the water port. */
         static String waterCheck(Map m, int s, DrillLayoutPlanner p, int[][] ent, List<Place> ents){
             if(p.wetDrills == 0) return "";
             int n = ents.size();
-            int start = ent[p.waterU][p.waterV];
-            if(start == 0 || ents.get(start).kind != DrillLayoutPlanner.LROUTER) return "noWaterPort ";
             boolean[] seen = new boolean[n];
             ArrayDeque<Integer> q = new ArrayDeque<>();
-            q.add(start); seen[start] = true;
+            for(int[] wp : p.waterPortList){
+                int start = ent[wp[0]][wp[1]];
+                if(start == 0 || ents.get(start).kind != DrillLayoutPlanner.LROUTER) continue;
+                if(!seen[start]){ seen[start] = true; q.add(start); }
+            }
+            if(q.isEmpty()) return "noWaterPort ";
             while(!q.isEmpty()){
                 int id = q.poll();
                 Place pl = ents.get(id);
@@ -536,5 +555,52 @@ public class PlannerTest{
         double o = 0;
         for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.DRILL) o += pl.ore * rate[pl.type];
         return o;
+    }
+
+    /**
+     * Several outputs with a line capacity, an interior output with a reserved 3x3, and two water
+     * ports. Every drill must reach an output, no output above capacity when the total fits.
+     */
+    static int outputsAndCapacity(){
+        int bad = 0;
+        Map m = new Map();
+        int W = m.W = 40, H = m.H = 30;
+        m.belt = new boolean[W][H]; m.drop = new int[W][H];
+        Random r = new Random(3);
+        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
+            m.belt[x][y] = true;
+            double d = Math.hypot((x - 18) / 1.6, y - 15) + 3 * Math.sin(x * 0.7) + 2 * Math.cos(y * 0.9);
+            m.drop[x][y] = d < 11 && r.nextFloat() < 0.9 ? 1 : -1;
+        }
+        m.drill = drillOk(m, 2);
+        int[][][] sinkSets = {
+            {{W, 15}},                       // one edge output
+            {{W, 8}, {W, 22}, {-1, 15}},     // three edge outputs (east twice, west)
+            {{20, 15}},                      // interior output
+            {{20, 15}, {W, 5}},              // interior + edge
+        };
+        for(int si = 0; si < sinkSets.length; si++){
+            for(int water = 0; water < 2; water++){
+                Params pa = params(m, 2, Mode.OUTPUT, false, true, 0, 0);
+                pa.sinks = sinkSets[si];
+                pa.sinkReserve = si >= 2 ? 1 : 0;
+                pa.itemsPerOre = 1f; pa.sinkCapacity = 140f;   // ~1/3 of the field's output per line
+                if(water == 1){ pa.water = true; pa.waterPorts = new int[][]{{0, 3}, {10, H - 1}}; }
+                DrillLayoutPlanner p = new DrillLayoutPlanner(pa);
+                boolean ok = p.plan();
+                FlowCheck.reserve = pa.sinkReserve;
+                String errs = ok ? FlowCheck.check(m, 2, p, false) : "plan failed: " + p.failure;
+                FlowCheck.reserve = 0;
+                double total = 0, maxLoad = 0;
+                for(double l : p.sinkLoad){ total += l; maxLoad = Math.max(maxLoad, l); }
+                boolean capOk = total > pa.sinkCapacity * p.sinkList.size() || maxLoad <= pa.sinkCapacity + 1e-6;
+                System.out.printf("outputs %d%s: %s drills=%d wet=%d loads=%s cap=%.0f %s%s%n", p.sinkList.size(), water == 1 ? " +water" : "",
+                    p.layout, p.drills, p.wetDrills, Arrays.toString(Arrays.stream(p.sinkLoad).mapToLong(Math::round).toArray()), pa.sinkCapacity,
+                    capOk ? "" : "OVER CAPACITY ", errs.isEmpty() ? "" : "ERR " + errs);
+                if(!errs.isEmpty() || !capOk) bad++;
+                if(System.getProperty("showout") != null && Integer.getInteger("showout") == si * 2 + water) print(m, 2, p);
+            }
+        }
+        return bad;
     }
 }

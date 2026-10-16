@@ -29,7 +29,7 @@ public class ClientSelfTest{
 
     final boolean water, autoPorts;
     boolean sawReplay, shotReplay;
-    float previewShotAt = -1f;
+    float previewShotAt = -1f, previewShotAt2 = -1f;
     String shot;
     DrillFieldJob.Candidate built;
 
@@ -85,13 +85,13 @@ public class ClientSelfTest{
                     job.conduit = Blocks.conduit;
                     Log.info("[selftest] region (@,@)-(@,@), output @, water @", job.ax, job.ay, job.bx, job.by, autoPorts ? "auto" : "East (clicked)", water ? "auto" : "off");
                     mod.startPicking();
-                    // what a click on the east edge / a right-click do
-                    if(autoPorts) mod.pickPort(-1, 0f);
+                    // what a click on the east edge / right-clicks do
+                    if(autoPorts) mod.autoKind();
                     else{
-                        float[] snap = job.snap(job.bx + 2, (job.ay + job.by) / 2);
-                        mod.pickPort((int)snap[0], snap[1]);
+                        mod.addPick(job.classify(job.bx + 2, (job.ay + job.by) / 2));
+                        mod.finishKind();
                     }
-                    if(water) mod.pickPort(-1, 0f);
+                    if(water) mod.autoKind();
                     phase = 2;
                 }
                 break;
@@ -121,12 +121,31 @@ public class ClientSelfTest{
                         Strings.autoFixed((float)a.score(), 1), !a.signature.equals(b.signature));
                     if(a.signature.equals(b.signature)){ fail("another plan is identical"); return; }
                     mod.show(a.score() >= b.score() ? 0 : 1);
-                    planned = mod.current().plans.size;
-                    built = mod.current();
+                    // "Add output": a second output on the opposite side
+                    int side = (mod.current().outDir + 2) % 4;
+                    mod.addOutputs();
+                    // (not 0.5: an auto-chosen water port may sit in the middle of that side; the UI refuses that tile)
+                    mod.addPick(DrillFieldJob.Port.edge(side, 0.25f));
+                    mod.finishKind();
+                    phase = 5;
+                }else if(mod.phase == AutoBuildMod.State.idle){ fail("another plan failed"); return; }
+                break;
+            case 5: // two outputs now
+                keepNearRegion();
+                if(mod.phase == AutoBuildMod.State.preview && mod.current() != null && mod.current().outPorts.size == 2){
+                    DrillFieldJob.Candidate c = mod.current();
+                    if(previewShotAt2 < 0){
+                        Log.info("[selftest] with 2 outputs: @ | loads @", c.portText(), java.util.Arrays.toString(c.loads));
+                        if(c.loads.length != 2 || c.loads[1] <= 0){ fail("second output unused"); return; }
+                        shot = "outputs"; previewShotAt2 = timer;
+                    }
+                    if(timer - previewShotAt2 < 0.5f) return;
+                    planned = c.plans.size;
+                    built = c;
                     mod.commit();
                     phase = 4;
                     timer = 0f;
-                }else if(mod.phase == AutoBuildMod.State.idle){ fail("another plan failed"); return; }
+                }else if(mod.phase == AutoBuildMod.State.idle){ fail("add output failed"); return; }
                 break;
             case 4: // keep the unit next to the region while it builds
                 DrillFieldJob job = mod.job;

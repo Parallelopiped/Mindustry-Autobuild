@@ -7,6 +7,25 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-17
+### Added
+- **Output line capacity**: every output carries at most one belt's worth (the chosen belt's speed).
+  Lanes and bridge chains that would exceed it are split; anything that doesn't fit any output is
+  left out instead of overloading a line, and the summary shows how much more the field could
+  supply ("Add output"). Per-output loads are shown in the summary and on the markers.
+- **Several outputs and water inputs**: click as many as you like (Done / right-click to continue,
+  Undo, Auto). **Ports inside the region**: a click inside the selection makes that tile an output
+  (items are delivered into it - put your conveyor or core there) or a water input (a liquid router
+  you feed); a click on / near the border snaps to the edge as before.
+- **Add output** button in the preview: keeps the current ports (also auto-chosen ones) and adds more.
+- Server test: `abtest <item> <drill> <outputs> <mode>` with outputs like `E:0.3,W:0.7,@12:8`,
+  `water=auto|<ports>`, a vault per output (per-output counts), `abtile x y [r]` for debugging.
+
+### Fixed
+- Drill-first with water planned line capacity for unboosted drills (water added later
+  multiplied their output); it now plans for boosted drills and recomputes loads from the water
+  network actually built.
+
 ## [0.8.1] - 2026-10-17
 ### Fixed
 - Material efficiency on large regions mined only a few patches (or produced plans with negative
@@ -153,6 +172,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.9.0]: #
 [0.8.1]: #
 [0.8.0]: #
 [0.7.0]: #

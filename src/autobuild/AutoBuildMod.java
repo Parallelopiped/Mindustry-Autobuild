@@ -40,6 +40,7 @@ public class AutoBuildMod extends Mod{
     /** port kinds the player places by clicking; future building types can add more */
     static final int portOutput = 0, portWater = 1;
     static final String[] portNames = {"Item output", "Water input"};
+    static final String[] portPlural = {"item outputs", "water inputs"};
 
     State phase = State.idle;
     boolean dragging;
@@ -49,11 +50,11 @@ public class AutoBuildMod extends Mod{
     final DrillFieldJob job = new DrillFieldJob();
     DrillFieldJob.Snapshot snapshot;
 
-    // port picking
-    final IntSeq pickQueue = new IntSeq();
-    int pickIndex;
-    /** hovered port candidate: side, frac; valid */
-    float[] hover;
+    // port picking: several item outputs, then (with water) several water inputs
+    int pickKind;
+    /** "Add output": keep the current outputs and add more */
+    boolean addingOutputs;
+    DrillFieldJob.Port hover;
     boolean hoverValid;
 
     // planning: recorded keyframes (planning thread appends), replayed afterwards
@@ -106,11 +107,16 @@ public class AutoBuildMod extends Mod{
         ui.hudGroup.fill(t -> {
             t.bottom().marginBottom(120f);
             t.table(Styles.black6, b -> {
-                b.label(() -> phase != State.pick ? "" : "Click a tile in the region for the [accent]" + portNames[pickQueue.get(pickIndex)]
-                    + "[] (snaps to the nearest edge)\n[lightgray]Right-click or Auto: let the planner choose").pad(8f).row();
+                b.label(() -> phase != State.pick ? "" : "Click tiles for the [accent]" + portPlural[pickKind] + "[] (" + picks().size + " picked)\n"
+                    + "[lightgray]On the border: " + (pickKind == portOutput ? "the belt leaves the region there" : "connect your pipe from outside")
+                    + ". Inside: " + (pickKind == portOutput ? "items are delivered into that tile (put your conveyor / core there)" : "a liquid router you feed")
+                    + "\nRight-click / Done: continue.  Auto: let the planner choose").pad(8f).row();
                 b.table(r -> {
-                    r.button("Auto", Icon.refresh, () -> pickPort(-1, 0f)).size(140f, 44f);
-                    r.button("Cancel", Icon.cancel, this::reset).size(140f, 44f);
+                    r.defaults().size(130f, 44f);
+                    r.button("Done", Icon.ok, this::finishKind).disabled(x -> picks().isEmpty());
+                    r.button("Auto", Icon.refresh, this::autoKind);
+                    r.button("Undo", Icon.undo, () -> { if(!picks().isEmpty()) picks().pop(); }).disabled(x -> picks().isEmpty());
+                    r.button("Cancel", Icon.cancel, this::reset);
                 });
             }).visible(() -> phase == State.pick);
         });
@@ -137,6 +143,8 @@ public class AutoBuildMod extends Mod{
                     r.button(Icon.left, Styles.defaulti, () -> show(shown - 1)).size(44f).disabled(x -> shown <= 0);
                     r.button(Icon.right, Styles.defaulti, () -> show(shown + 1)).size(44f).disabled(x -> shown >= variants.size - 1);
                     r.button("Ports", Icon.move, this::startPicking);
+                    r.button("Add output", Icon.add, this::addOutputs).size(150f, 44f)
+                        .tooltip("Pick more item outputs (one belt line can only carry so much)");
                     r.button("Edit", Icon.settings, this::showDialog);
                     r.button("Cancel", Icon.cancel, this::reset);
                 });
@@ -192,14 +200,15 @@ public class AutoBuildMod extends Mod{
                 break;
             case pick:
                 // any tile in (or just around) the region snaps to the nearest edge
+                // inside the region: an interior port; on / near the border: snapped to the nearest edge
                 boolean near = tx >= job.ax - 3 && tx <= job.bx + 3 && ty >= job.ay - 3 && ty <= job.by + 3;
-                hover = near ? job.snap(tx, ty) : null;
-                hoverValid = hover != null && portAllowed(pickQueue.get(pickIndex), (int)hover[0]);
+                hover = near ? job.classify(tx, ty) : null;
+                hoverValid = hover != null && portAllowed(hover);
                 if(Core.input.keyTap(KeyCode.escape)) reset();
-                else if(Core.input.keyTap(KeyCode.mouseRight)) pickPort(-1, 0f);
+                else if(Core.input.keyTap(KeyCode.mouseRight)){ if(picks().isEmpty()) autoKind(); else finishKind(); }
                 else if(Core.input.keyTap(KeyCode.mouseLeft) && !Core.scene.hasMouse() && hover != null){
-                    if(hoverValid) pickPort((int)hover[0], hover[1]);
-                    else ui.showInfoToast("[scarlet]The water input must be on a different side than the item output", 2f);
+                    if(hoverValid) addPick(hover);
+                    else ui.showInfoToast("[scarlet]That tile is already a port", 2f);
                 }
                 break;
             case playback:
@@ -215,29 +224,60 @@ public class AutoBuildMod extends Mod{
         }
     }
 
-    boolean portAllowed(int kind, int side){
-        if(kind == portWater && job.outPick >= 0 && side == job.outPick) return false;
-        if(kind == portOutput && job.water && job.waterPick >= 0 && side == job.waterPick && pickIndex > 0) return false;
+    Seq<DrillFieldJob.Port> picks(){ return pickKind == portOutput ? job.outs : job.waters; }
+
+    /** the tile a port's marker sits on */
+    int[] markerTile(int kind, DrillFieldJob.Port p){
+        return p.edge ? job.edgeTile(p.side, p.frac) : new int[]{p.x, p.y};
+    }
+
+    /** one port per tile */
+    boolean portAllowed(DrillFieldJob.Port p){
+        int[] t = markerTile(pickKind, p);
+        for(int kind = 0; kind < 2; kind++){
+            for(DrillFieldJob.Port o : kind == portOutput ? job.outs : job.waters){
+                int[] q = markerTile(kind, o);
+                if(q[0] == t[0] && q[1] == t[1]) return false;
+            }
+        }
         return true;
     }
 
     void startPicking(){
-        pickQueue.clear();
-        pickQueue.add(portOutput);
-        if(job.water) pickQueue.add(portWater);
-        pickIndex = 0;
-        job.outPick = -1;
-        job.waterPick = -1;
+        job.outs.clear();
+        job.waters.clear();
+        pickKind = portOutput;
+        addingOutputs = false;
         phase = State.pick;
     }
 
-    /** side = -1: auto */
-    void pickPort(int side, float frac){
+    /** "Add output": keep the current plan's ports (also auto-chosen ones) and pick more outputs */
+    void addOutputs(){
+        Candidate c = current();
+        if(c == null) return;
+        job.outs.set(c.outPorts);
+        if(job.water) job.waters.set(c.waterPorts);
+        pickKind = portOutput;
+        addingOutputs = true;
+        phase = State.pick;
+    }
+
+    void addPick(DrillFieldJob.Port p){
         if(phase != State.pick) return;
-        int kind = pickQueue.get(pickIndex);
-        if(kind == portOutput){ job.outPick = side; job.outFrac = frac; }
-        else{ job.waterPick = side; job.waterFrac = frac; }
-        if(++pickIndex >= pickQueue.size) startPlanning(true);
+        picks().add(p);
+    }
+
+    /** this kind is done: next kind, or plan */
+    void finishKind(){
+        if(phase != State.pick) return;
+        if(pickKind == portOutput && job.water && !addingOutputs){ pickKind = portWater; return; }
+        startPlanning(true);
+    }
+
+    /** let the planner choose this kind */
+    void autoKind(){
+        picks().clear();
+        finishKind();
     }
 
     // ---------------------------------------------------------------- dialog
@@ -464,19 +504,29 @@ public class AutoBuildMod extends Mod{
         WorldLabel.drawAt(text, x, y, Layer.overlayUI + 1f, WorldLabel.flagOutline | WorldLabel.flagBackground, 1f, Align.center, Align.center);
     }
 
-    /** port marker at a world tile on side `side`; output points out of the region, input points in */
-    static void port(int kind, int tx, int ty, int side, String text, boolean valid){
-        float px = tx * tilesize, py = ty * tilesize;
-        float ang = side * 90f + (kind == portOutput ? 0f : 180f);
+    /**
+     * Port marker. Edge output: arrow out of the region; edge water input: arrow into it; interior
+     * port: a framed tile (items are delivered into it / water router there).
+     */
+    void port(int kind, DrillFieldJob.Port p, String text, boolean valid){
+        int[] t = markerTile(kind, p);
+        float px = t[0] * tilesize, py = t[1] * tilesize;
         Draw.z(Layer.overlayUI);
         Draw.color(!valid ? Color.scarlet : kind == portOutput ? Pal.remove : Pal.water);
         Lines.stroke(1.5f);
         Lines.square(px, py, tilesize / 2f + 1f);
-        float ox = Geometry.d4x(side) * tilesize, oy = Geometry.d4y(side) * tilesize;
-        if(kind == portOutput) arrow(px + ox * 0.5f, py + oy * 0.5f, ang);
-        else arrow(px + ox * 1.5f, py + oy * 1.5f, ang);
+        float lx = px, ly = py + tilesize * 2f;
+        if(p.edge){
+            float ang = p.side * 90f + (kind == portOutput ? 0f : 180f);
+            float ox = Geometry.d4x(p.side) * tilesize, oy = Geometry.d4y(p.side) * tilesize;
+            if(kind == portOutput) arrow(px + ox * 0.5f, py + oy * 0.5f, ang);
+            else arrow(px + ox * 1.5f, py + oy * 1.5f, ang);
+            lx = px + ox * 3f; ly = py + oy * 3f + (p.side % 2 == 0 ? tilesize : 0f);
+        }else{
+            Lines.square(px, py, tilesize / 2f + 3f, 45f);
+        }
         Draw.reset();
-        if(text != null) label(text, px + ox * 3f, py + oy * 3f + (side % 2 == 0 ? tilesize : 0f));
+        if(text != null) label(text, lx, ly);
     }
 
     void ghosts(Seq<BuildPlan> plans){
@@ -508,17 +558,10 @@ public class AutoBuildMod extends Mod{
         switch(phase){
             case pick: {
                 // ports picked so far, then the one under the cursor
-                for(int i = 0; i < pickIndex; i++){
-                    int kind = pickQueue.get(i), side = kind == portOutput ? job.outPick : job.waterPick;
-                    float f = kind == portOutput ? job.outFrac : job.waterFrac;
-                    if(side < 0) continue;
-                    int[] t = job.edgeTile(side, f);
-                    port(kind, t[0], t[1], side, portNames[kind], true);
-                }
+                for(int i = 0; i < job.outs.size; i++) port(portOutput, job.outs.get(i), portNames[portOutput] + " " + (i + 1), true);
+                for(int i = 0; i < job.waters.size; i++) port(portWater, job.waters.get(i), portNames[portWater] + " " + (i + 1), true);
                 if(hover != null){
-                    int kind = pickQueue.get(pickIndex);
-                    int[] t = job.edgeTile((int)hover[0], hover[1]);
-                    port(kind, t[0], t[1], (int)hover[0], hoverValid ? portNames[kind] + "?" : "not on the output side", hoverValid);
+                    port(pickKind, hover, hoverValid ? portNames[pickKind] + (hover.edge ? " (edge)?" : " here?") : "already a port", hoverValid);
                 }
                 break;
             }
@@ -549,8 +592,14 @@ public class AutoBuildMod extends Mod{
                     if(p.config instanceof Point2 l && (l.x != 0 || l.y != 0)) Lines.line(p.drawx(), p.drawy(), (p.x + l.x) * tilesize, (p.y + l.y) * tilesize);
                 }
                 Draw.reset();
-                port(portOutput, c.portX, c.portY, c.outDir, "Item output" + (c.outAuto ? " (auto)" : ""), true);
-                if(c.waterPortX >= 0) port(portWater, c.waterPortX, c.waterPortY, c.waterDir, "Water input" + (c.waterAuto ? " (auto)" : ""), true);
+                for(int k = 0; k < c.outPorts.size; k++){
+                    String load = k < c.loads.length ? Strings.autoFixed((float)c.loads[k], 1) + "/" + Strings.autoFixed(c.beltCapacity, 1) + " per s" : "";
+                    port(portOutput, c.outPorts.get(k), (c.outPorts.size > 1 ? "Output " + (k + 1) : "Item output") + (c.outAuto ? " (auto)" : "") + "  " + load,
+                        k >= c.loads.length || !c.overloaded(k));
+                }
+                for(int k = 0; k < c.waterPorts.size; k++){
+                    port(portWater, c.waterPorts.get(k), (c.waterPorts.size > 1 ? "Water input " + (k + 1) : "Water input") + (c.waterAuto ? " (auto)" : ""), true);
+                }
                 break;
             }
             default: break;

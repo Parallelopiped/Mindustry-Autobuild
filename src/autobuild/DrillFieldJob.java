@@ -17,6 +17,7 @@ import mindustry.world.blocks.production.*;
 import mindustry.world.consumers.*;
 
 import java.util.*;
+import java.util.Arrays;
 
 import static mindustry.Vars.*;
 
@@ -48,9 +49,47 @@ public class DrillFieldJob{
     public Block conduit = Blocks.conduit;
     /** also use smaller, lower-tier drills where the chosen one doesn't fit */
     public boolean mixDrills = true;
-    /** ports picked by the player: region side (0=E 1=N 2=W 3=S) or -1 = let the planner choose; position along the side in world order */
-    public int outPick = -1, waterPick = -1;
-    public float outFrac = 0.5f, waterFrac = 0.5f;
+    /** ports picked by the player; empty = let the planner choose */
+    public final Seq<Port> outs = new Seq<>(), waters = new Seq<>();
+    /** tiles kept free around an interior output (server test: 1 for a 3x3 vault) */
+    public int sinkReserve;
+
+    /**
+     * A port: on a region edge (side 0=E 1=N 2=W 3=S, position along it in world order) or an
+     * interior tile. An edge output's belt leaves the region there; an interior output delivers into
+     * that tile (the player's own block). A water port is a liquid router fed from outside / by the player.
+     */
+    public static class Port{
+        public boolean edge;
+        public int side;
+        public float frac;
+        public int x, y;
+
+        public static Port edge(int side, float frac){ Port p = new Port(); p.edge = true; p.side = side; p.frac = frac; return p; }
+
+        public static Port at(int x, int y){ Port p = new Port(); p.x = x; p.y = y; return p; }
+
+        public String name(){ return edge ? dirNames[side] : "(" + x + "," + y + ")"; }
+    }
+
+    /** a click: inside the region (a tile away from its border) = interior port, otherwise snapped to the nearest edge */
+    public Port classify(int tx, int ty){
+        if(tx > ax && tx < bx && ty > ay && ty < by) return Port.at(tx, ty);
+        float[] s = snap(tx, ty);
+        return Port.edge((int)s[0], s[1]);
+    }
+
+    /** world tile the planner delivers items into for an output port */
+    public int[] sinkTile(Port p){
+        if(!p.edge) return new int[]{p.x, p.y};
+        int[] t = edgeTile(p.side, p.frac);
+        return new int[]{t[0] + Geometry.d4x(p.side), t[1] + Geometry.d4y(p.side)};
+    }
+
+    /** world tile of the liquid router for a water port */
+    public int[] waterTile(Port p){
+        return p.edge ? edgeTile(p.side, p.frac) : new int[]{p.x, p.y};
+    }
 
     public String error;
     public volatile boolean cancelled;
@@ -204,7 +243,6 @@ public class DrillFieldJob{
             error = boost == null ? drill.localizedName + " can't be boosted with water" : "conduits / liquid routers aren't available here";
             return null;
         }
-        if(water && outPick >= 0 && outPick == waterPick){ error = "the water port must be on a different side than the output"; return null; }
         sn.waterOn = water;
         if(water){
             sn.boost = drill.liquidBoostIntensity * drill.liquidBoostIntensity;
@@ -261,12 +299,15 @@ public class DrillFieldJob{
     public class Candidate{
         public Frame frame;
         public DrillLayoutPlanner planner;
-        public int outDir, waterDir = -1, variant;
-        public float outFrac, waterFrac;
+        public int outDir, variant;
+        public Seq<Port> outPorts = new Seq<>(), waterPorts = new Seq<>();
         public boolean outAuto, waterAuto;
+        /** per output: world tile the items go into, items/s delivered */
+        public int[][] sinkWorld = new int[0][];
+        public double[] loads = new double[0];
         public final Seq<BuildPlan> plans = new Seq<>();
         public float itemsPerSecond, beltCapacity, powerPerSecond, waterPerSecond;
-        public int portX, portY, waterPortX = -1, waterPortY = -1;
+        public float excessFlow;
         public PowerNode node;
         public ItemBridge bridge;
         public Drill[] types;
@@ -310,11 +351,21 @@ public class DrillFieldJob{
             return out;
         }
 
+        public boolean water(){ return waterPorts.size > 0; }
+
         public String portText(){
-            String t = "Output: " + dirNames[outDir] + (outAuto ? " (auto)" : "");
-            if(waterDir >= 0) t += ", water from: " + dirNames[waterDir] + (waterAuto ? " (auto)" : "");
-            return t;
+            StringBuilder t = new StringBuilder(outPorts.size == 1 ? "Output: " : "Outputs: ");
+            for(int i = 0; i < outPorts.size; i++) t.append(i > 0 ? ", " : "").append(outPorts.get(i).name());
+            if(outAuto) t.append(" (auto)");
+            if(water()){
+                t.append(waterPorts.size == 1 ? ", water from: " : ", water from: ");
+                for(int i = 0; i < waterPorts.size; i++) t.append(i > 0 ? ", " : "").append(waterPorts.get(i).name());
+                if(waterAuto) t.append(" (auto)");
+            }
+            return t.toString();
         }
+
+        public boolean overloaded(int k){ return loads[k] > beltCapacity + 0.05f; }
 
         public String summary(){
             if(!ok()) return "[scarlet]" + error;
@@ -327,32 +378,41 @@ public class DrillFieldJob{
             }
             sb.append(Strings.format("@ on @ @ ore tiles, ~@/s", kinds, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
             sb.append(Strings.format(" [lightgray](@)[]", planner.layout));
-            if(waterDir >= 0 && planner.waterSkipped){
+            if(water() && planner.waterSkipped){
                 sb.append("\n[orange]Water skipped: the water network couldn't reach enough drills to beat a layout without water");
-            }else if(waterDir >= 0){
+            }else if(water()){
                 sb.append(Strings.format("\n[sky]@/@ drills water-boosted, needs ~@ water/s at the water port", planner.wetDrills, planner.drills,
                     Strings.autoFixed(waterPerSecond, 1)));
             }
             if(planner.nodes > 0) sb.append(Strings.format("\n@ power nodes, needs @ power/s", planner.nodes, Strings.autoFixed(powerPerSecond, 1)));
-            if(itemsPerSecond > beltCapacity) sb.append(Strings.format("\n[orange]Exceeds @ capacity (~@/s): output will back up", belt.localizedName, Strings.autoFixed(beltCapacity, 1)));
-            if(planner.segmentsDropped > 0) sb.append("\n[orange]").append(planner.segmentsDropped).append(" lane(s) dropped: no route to the port");
+            // per output line: load / capacity
+            sb.append("\n").append(loads.length == 1 ? "Output line: " : "Output lines: ");
+            for(int k = 0; k < loads.length; k++){
+                sb.append(k > 0 ? ", " : "").append(overloaded(k) ? "[scarlet]" : "[lightgray]")
+                    .append(Strings.autoFixed((float)loads[k], 1)).append('/').append(Strings.autoFixed(beltCapacity, 1)).append("[]");
+            }
+            sb.append(" items/s");
+            for(int k = 0; k < loads.length; k++) if(overloaded(k)){ sb.append("\n[scarlet]Output ").append(k + 1).append(" exceeds ").append(belt.localizedName).append(" capacity: it will back up"); break; }
+            if(excessFlow > 0.1f) sb.append(Strings.format("\n[orange]The field could add ~@/s with more outputs: use \"Add output\"", Strings.autoFixed(excessFlow, 1)));
+            if(planner.segmentsDropped > 0) sb.append("\n[orange]").append(planner.segmentsDropped).append(" lane(s) dropped: no route to an output");
             if(planner.drillsDroppedForPower > 0) sb.append("\n[orange]").append(planner.drillsDroppedForPower).append(" drill(s) dropped to fit power nodes");
             if(planner.powerGroups > 1) sb.append("\n[orange]Power nodes form ").append(planner.powerGroups).append(" separate groups: link them manually");
-            if(needsLiquid(drill) && waterDir < 0) sb.append("\n[orange]").append(drill.localizedName).append(" needs a liquid supply (not planned yet)");
+            if(needsLiquid(drill) && !water()) sb.append("\n[orange]").append(drill.localizedName).append(" needs a liquid supply (not planned yet)");
             return sb.toString();
         }
     }
 
-    /** Plans one candidate with fixed ports and variant. Any thread. */
-    public Candidate plan(Snapshot sn, int outDir, float outFrac, int waterDir, float waterFrac, int variant, Progress progress){
+    /** Plans one candidate: frame direction `dir` (lane flow), given outputs and water ports, variant. Any thread. */
+    public Candidate plan(Snapshot sn, int dir, Seq<Port> outPorts, Seq<Port> waterPorts, int variant, Progress progress){
         Candidate c = new Candidate();
-        c.outDir = outDir; c.outFrac = outFrac; c.waterDir = waterDir; c.waterFrac = waterFrac; c.variant = variant;
+        c.outDir = dir; c.variant = variant; c.outPorts = outPorts; c.waterPorts = waterPorts;
         c.node = sn.node0; c.bridge = sn.bridge; c.types = sn.types; c.perType = new int[sn.types.length];
-        Frame f = c.frame = new Frame(ax, ay, bx, by, outDir);
-        int W = f.W, H = f.H, s = sn.s;
+        c.beltCapacity = belt instanceof Conveyor cv ? cv.displayedSpeed : Float.MAX_VALUE;
+        Frame f = c.frame = new Frame(ax, ay, bx, by, dir);
+        int W = f.W, H = f.H;
 
         Params p = new Params();
-        p.W = W; p.H = H; p.drillSize = s; p.target = target.id; p.mode = mode; p.power = sn.power; p.variant = variant;
+        p.W = W; p.H = H; p.drillSize = sn.s; p.target = target.id; p.mode = mode; p.power = sn.power; p.variant = variant;
         p.bridges = sn.bridge != null;
         if(sn.bridge != null) p.bridgeRange = sn.bridge.range;
         if(sn.node0 != null){ p.nodeRange = sn.node0.laserRange; p.nodeMaxLinks = sn.node0.maxNodes; }
@@ -376,15 +436,27 @@ public class DrillFieldJob{
             }
         }
         p.drop = p.typeDrop[0]; p.drillOk = p.typeDrillOk[0];
-        // port position: fraction in world order -> local v (the local v axis runs backwards for N and W)
-        float lf = outDir == 1 || outDir == 2 ? 1f - outFrac : outFrac;
-        p.portV = Mathf.round(lf * (H - 1));
-        if(waterDir >= 0){
+
+        // outputs: tiles to deliver into; line capacity from the belt
+        p.sinks = new int[outPorts.size][];
+        for(int i = 0; i < outPorts.size; i++){
+            int[] w = sinkTile(outPorts.get(i));
+            p.sinks[i] = new int[]{f.lu(w[0], w[1]), f.lv(w[0], w[1])};
+        }
+        p.sinkReserve = sinkReserve;
+        p.portV = Mathf.clamp(p.sinks[0][1], 0, H - 1);
+        if(c.beltCapacity < Float.MAX_VALUE){
+            p.sinkCapacity = c.beltCapacity;
+            p.itemsPerOre = 60f / drill.getDrillTime(target);
+        }
+        if(waterPorts.size > 0){
             p.water = true;
             p.waterBoost = sn.boost;
-            p.waterSide = (waterDir - outDir + 4) % 4; // 1 = top (+v), 2 = west (-u), 3 = bottom (-v)
-            int[] wt = edgeTile(waterDir, waterFrac);
-            p.waterPos = p.waterSide == 2 ? f.lv(wt[0], wt[1]) : f.lu(wt[0], wt[1]);
+            p.waterPorts = new int[waterPorts.size][];
+            for(int i = 0; i < waterPorts.size; i++){
+                int[] w = waterTile(waterPorts.get(i));
+                p.waterPorts[i] = new int[]{f.lu(w[0], w[1]), f.lv(w[0], w[1])};
+            }
             p.liquidBridgeRange = sn.liquidRange;
         }
 
@@ -396,10 +468,10 @@ public class DrillFieldJob{
         }
         long time = Time.millis();
         boolean ok = planner.plan();
-        Log.info("[autobuild] @x@ out=@ water=@ var=@ @ @ layout=@ ok=@ score=@ drills=@ wet=@ ore=@ belts=@ bridges=@ nodes=@ routed=@ dropped=@ in @ms @",
-            W, H, dirNames[outDir], waterDir < 0 ? "-" : dirNames[waterDir], variant, drill.name, mode, planner.layout, ok, Strings.autoFixed((float)planner.score, 1),
-            planner.drills, planner.wetDrills, planner.oreTiles, planner.belts, planner.bridges, planner.nodes, planner.segmentsRouted, planner.segmentsDropped,
-            Time.timeSinceMillis(time), ok ? "" : planner.failure);
+        Log.info("[autobuild] @x@ dir=@ @ var=@ @ @ layout=@ ok=@ score=@ drills=@ wet=@ ore=@ belts=@ bridges=@ nodes=@ loads=@ excess=@ in @ms @",
+            W, H, dirNames[dir], c.portText(), variant, drill.name, mode, planner.layout, ok, Strings.autoFixed((float)planner.score, 1),
+            planner.drills, planner.wetDrills, planner.oreTiles, planner.belts, planner.bridges, planner.nodes, Arrays.toString(planner.sinkLoad),
+            Strings.autoFixed((float)planner.excessFlow, 1), Time.timeSinceMillis(time), ok ? "" : planner.failure);
         if(!ok){ c.error = planner.failure; return c; }
 
         c.waterPerSecond = 0f;
@@ -424,47 +496,55 @@ public class DrillFieldJob{
         }
         // nodes first (they link to each other as they're built, drills link to them when finished), then logistics, then drills
         c.plans.addAll(nodes).addAll(logistics).addAll(drills);
-        c.beltCapacity = belt instanceof Conveyor cv ? cv.displayedSpeed : Float.MAX_VALUE;
-        c.portX = f.wx(W - 1, planner.port);
-        c.portY = f.wy(W - 1, planner.port);
-        if(waterDir >= 0 && planner.waterU >= 0 && !planner.waterSkipped){
-            c.waterPortX = f.wx(planner.waterU, planner.waterV);
-            c.waterPortY = f.wy(planner.waterU, planner.waterV);
+        c.sinkWorld = new int[planner.sinkList.size()][];
+        for(int k = 0; k < c.sinkWorld.length; k++){
+            int[] s0 = planner.sinkList.get(k);
+            c.sinkWorld[k] = new int[]{f.wx(s0[0], s0[1]), f.wy(s0[0], s0[1])};
         }
+        c.loads = planner.sinkLoad.clone();
+        c.excessFlow = (float)planner.excessFlow;
+        if(waterPorts.size > 0 && planner.waterSkipped) c.waterPorts = new Seq<>();
         return c;
     }
 
     /**
-     * Plans every side combination the player left on auto (output: all four sides; water: the
-     * side opposite the output first, then the others for the best output side), then
-     * `variants` variants starting at `variantBase` with the best ports. Returns the best by score,
-     * or the first failure if nothing works.
+     * Plans every option the player left to the planner (outputs: one on each side; water: the side
+     * opposite the output, then the other sides), then `variants` variants starting at `variantBase`
+     * with the best ports. Picked outputs fix the lane direction (the first edge output's side; all
+     * four for interior-only outputs). Returns the best by score, or the first failure.
      */
     public Candidate search(Snapshot sn, int variantBase, int variants, Progress progress){
         Candidate best = null, firstFail = null;
-        IntSeq outs = new IntSeq();
-        if(outPick >= 0) outs.add(outPick);
-        else for(int d = 0; d < 4; d++) if(!(sn.waterOn && d == waterPick)) outs.add(d);
-        for(int i = 0; i < outs.size; i++){
-            int o = outs.get(i);
-            int wd = !sn.waterOn ? -1 : waterPick >= 0 ? waterPick : (o + 2) % 4;
-            Candidate c = plan(sn, o, outPick >= 0 ? outFrac : 0.5f, wd, waterPick >= 0 ? waterFrac : 0.5f, variantBase, progress);
-            c.outAuto = outPick < 0; c.waterAuto = sn.waterOn && waterPick < 0;
+        Seq<Object[]> options = new Seq<>(); // {dir, outs}
+        if(outs.isEmpty()){
+            for(int d = 0; d < 4; d++) options.add(new Object[]{d, Seq.with(Port.edge(d, 0.5f))});
+        }else{
+            Port firstEdge = outs.find(o -> o.edge);
+            if(firstEdge != null) options.add(new Object[]{firstEdge.side, new Seq<>(outs)});
+            else for(int d = 0; d < 4; d++) options.add(new Object[]{d, new Seq<>(outs)});
+        }
+        for(Object[] o : options){
+            int dir = (int)o[0];
+            @SuppressWarnings("unchecked") Seq<Port> os = (Seq<Port>)o[1];
+            Seq<Port> ws = !sn.waterOn ? new Seq<>() : !waters.isEmpty() ? new Seq<>(waters) : Seq.with(Port.edge((dir + 2) % 4, 0.5f));
+            Candidate c = plan(sn, dir, os, ws, variantBase, progress);
+            c.outAuto = outs.isEmpty(); c.waterAuto = sn.waterOn && waters.isEmpty();
             if(c.ok() && (best == null || c.score() > best.score())) best = c;
             if(!c.ok() && firstFail == null) firstFail = c;
         }
-        if(best != null && sn.waterOn && waterPick < 0){
+        if(best != null && sn.waterOn && waters.isEmpty()){
+            Candidate b = best;
             for(int wd = 0; wd < 4; wd++){
-                if(wd == best.outDir || wd == best.waterDir) continue;
-                Candidate c = plan(sn, best.outDir, best.outFrac, wd, 0.5f, variantBase, progress);
-                c.outAuto = best.outAuto; c.waterAuto = true;
+                if(wd == (b.outDir + 2) % 4) continue;
+                Candidate c = plan(sn, b.outDir, b.outPorts, Seq.with(Port.edge(wd, 0.5f)), variantBase, progress);
+                c.outAuto = b.outAuto; c.waterAuto = true;
                 if(c.ok() && c.score() > best.score()) best = c;
             }
         }
         if(best != null){
             Candidate b = best;
             for(int v = variantBase + 1; v < variantBase + variants; v++){
-                Candidate c = plan(sn, b.outDir, b.outFrac, b.waterDir, b.waterFrac, v, progress);
+                Candidate c = plan(sn, b.outDir, b.outPorts, b.waterPorts.isEmpty() && sn.waterOn ? Seq.with(Port.edge((b.outDir + 2) % 4, 0.5f)) : b.waterPorts, v, progress);
                 c.outAuto = b.outAuto; c.waterAuto = b.waterAuto;
                 if(c.ok() && c.score() > best.score()) best = c;
             }

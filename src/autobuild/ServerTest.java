@@ -24,24 +24,22 @@ import static mindustry.Vars.*;
  * </pre>
  */
 public class ServerTest{
-    static Building vault;
+    static final Seq<Building> vaults = new Seq<>();
     static int lastCount;
     static long lastTime;
     static float predicted;
 
     static void register(CommandHandler handler){
-        handler.register("abtest", "<item> <drill> <dir> <mode> [options...]", "AutoBuild: plan and place a drill field. dir may be auto. options: size=N belt=NAME nobridge nomix water=SIDE[:FRAC]|auto conduit=NAME", args -> {
+        handler.register("abtest", "<item> <drill> <outputs> <mode> [options...]",
+            "AutoBuild: plan and place a drill field. outputs: auto, or e.g. E:0.3,W:0.7,@12:8 (@ = interior tile relative to the region corner). "
+            + "options: size=N belt=NAME nobridge nomix water=auto|<ports> conduit=NAME", args -> {
             if(!state.isGame()){ Log.err("host a map first"); return; }
             Item item = content.item(args[0]);
             Block drill = content.block(args[1]);
-            boolean autoOut = args[2].equalsIgnoreCase("auto");
-            int dir = autoOut ? -1 : "ENWS".indexOf(Character.toUpperCase(args[2].charAt(0)));
             int size = 30;
             Block belt = Blocks.conveyor, conduit = Blocks.conduit;
-            boolean bridges = true, mix = true;
-            int waterDir = -1;
-            boolean water = false;
-            float waterFrac = 0.5f;
+            boolean bridges = true, mix = true, water = false;
+            String waterSpec = "auto";
             // a variadic "[options...]" parameter arrives as one space-joined string
             Seq<String> opts = new Seq<>();
             for(int i = 4; i < args.length; i++) for(String o : args[i].trim().split("\\s+")) if(!o.isEmpty()) opts.add(o);
@@ -53,25 +51,21 @@ public class ServerTest{
                     case "conduit": conduit = content.block(kv[1]); break;
                     case "nobridge": bridges = false; break;
                     case "nomix": mix = false; break;
-                    case "water":
-                        water = true;
-                        if(kv[1].equalsIgnoreCase("auto")) break;
-                        String[] wf = kv[1].split(":");
-                        waterDir = "ENWS".indexOf(Character.toUpperCase(wf[0].charAt(0)));
-                        if(wf.length > 1) waterFrac = Strings.parseFloat(wf[1], 0.5f);
-                        break;
+                    case "water": water = true; waterSpec = kv[1]; break;
                     default: Log.err("unknown option @", opt); return;
                 }
             }
-            if(item == null || !(drill instanceof Drill) || (dir < 0 && !autoOut) || belt == null){ Log.err("bad arguments"); return; }
+            if(item == null || !(drill instanceof Drill) || belt == null){ Log.err("bad arguments"); return; }
 
             DrillFieldJob job = new DrillFieldJob();
-            job.drill = (Drill)drill; job.target = item; job.outPick = dir; job.outFrac = 0.5f; job.belt = belt;
+            job.drill = (Drill)drill; job.target = item; job.belt = belt;
             job.mode = args[3].startsWith("e") ? Mode.EFFICIENCY : Mode.OUTPUT;
             job.bridges = bridges;
             job.mixDrills = mix;
-            job.water = water; job.waterPick = waterDir; job.waterFrac = waterFrac; job.conduit = conduit;
+            job.water = water; job.conduit = conduit;
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
+            if(!parsePorts(job, args[2], job.outs) || !parsePorts(job, waterSpec, job.waters)){ Log.err("bad port list"); return; }
+            for(DrillFieldJob.Port pt : job.outs) if(!pt.edge) job.sinkReserve = 1; // room for a 3x3 vault
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
             DrillFieldJob.Snapshot sn = job.prepare();
             DrillFieldJob.Candidate cand = sn == null ? null : job.search(sn, 0, 3, null);
@@ -89,15 +83,6 @@ public class ServerTest{
                 return;
             }
             Log.info("[abtest] @ | @ | variant @", Strings.stripColors(cand.summary()).replace('\n', ' '), cand.portText(), cand.variant);
-            {
-                // same region without bridges or water, same output side (ore is randomized per server start)
-                DrillFieldJob alt = new DrillFieldJob();
-                alt.drill = job.drill; alt.target = job.target; alt.outPick = cand.outDir; alt.belt = job.belt; alt.mode = job.mode;
-                alt.ax = job.ax; alt.ay = job.ay; alt.bx = job.bx; alt.by = job.by; alt.bridges = false; alt.mixDrills = false;
-                DrillFieldJob.Snapshot asn = alt.prepare();
-                DrillFieldJob.Candidate a = asn == null ? null : alt.search(asn, 0, 1, null);
-                if(a != null && a.ok()) Log.info("[abtest] baseline (chosen drill only, no bridges, no water): @", Strings.stripColors(a.summary()).replace('\n', ' '));
-            }
 
             boolean first = true;
             for(BuildPlan p : cand.plans){
@@ -112,34 +97,80 @@ public class ServerTest{
                     t.build.playerPlaced(p.config);
                 }
             }
-            // vault (3x3) right behind the port, outside the region
-            int od = cand.outDir;
-            int ex = cand.portX + (od == 0 ? 2 : od == 2 ? -2 : 0), ey = cand.portY + (od == 1 ? 2 : od == 3 ? -2 : 0);
-            Tile vt = world.tile(ex, ey);
-            if(vt == null){ Log.err("no room for the vault"); return; }
-            vt.setBlock(Blocks.vault, job.team, 0);
-            if(cand.waterPortX >= 0){
-                // infinite water right outside the water port
-                Tile st = world.tile(cand.waterPortX + Geometry.d4x(cand.waterDir), cand.waterPortY + Geometry.d4y(cand.waterDir));
-                if(st != null){
-                    st.setBlock(Blocks.liquidSource, job.team, 0);
-                    st.build.configured(null, Liquids.water);
-                    Log.info("[abtest] water source at (@,@)", st.x, st.y);
-                }
+            // a vault (3x3) at every output: past the edge, or on the reserved interior tiles
+            vaults.clear();
+            for(int k = 0; k < cand.outPorts.size; k++){
+                DrillFieldJob.Port pt = cand.outPorts.get(k);
+                int[] sink = cand.sinkWorld[k];
+                int vx = sink[0] + (pt.edge ? Geometry.d4x(pt.side) : 0), vy = sink[1] + (pt.edge ? Geometry.d4y(pt.side) : 0);
+                Tile vt = world.tile(vx, vy);
+                if(vt == null){ Log.err("no room for vault @", k + 1); continue; }
+                vt.setBlock(Blocks.vault, job.team, 0);
+                vaults.add(vt.build);
+                Log.info("[abtest] output @ at (@,@): vault (@,@), planned @/s", k + 1, sink[0], sink[1], vx, vy, Strings.autoFixed((float)cand.loads[k], 2));
             }
-            vault = vt.build;
-            lastCount = 0; lastTime = Time.millis(); predicted = Math.min(cand.itemsPerSecond, cand.beltCapacity);
-            Log.info("[abtest] placed @ blocks, vault at (@,@), predicted @/s", cand.plans.size, ex, ey, Strings.autoFixed(predicted, 2));
+            // infinite water at every water port: outside an edge port, next to an interior one
+            for(DrillFieldJob.Port pt : cand.waterPorts){
+                int[] w = job.waterTile(pt);
+                Tile st = null;
+                if(pt.edge) st = world.tile(w[0] + Geometry.d4x(pt.side), w[1] + Geometry.d4y(pt.side));
+                else for(int d = 0; d < 4 && st == null; d++){
+                    Tile n = world.tile(w[0] + Geometry.d4x(d), w[1] + Geometry.d4y(d));
+                    if(n != null && n.build == null && !n.solid()) st = n;
+                }
+                if(st == null){ Log.err("no room for a water source at (@,@)", w[0], w[1]); continue; }
+                st.setBlock(Blocks.liquidSource, job.team, 0);
+                st.build.configured(null, Liquids.water);
+                Log.info("[abtest] water source at (@,@)", st.x, st.y);
+            }
+            lastCount = 0; lastTime = Time.millis();
+            predicted = 0f;
+            for(int k = 0; k < cand.loads.length; k++) predicted += Math.min((float)cand.loads[k], cand.beltCapacity);
+            Log.info("[abtest] placed @ blocks, @ output(s), predicted @/s total", cand.plans.size, vaults.size, Strings.autoFixed(predicted, 2));
+        });
+
+        handler.register("abtile", "<x> <y> [radius]", "AutoBuild: describe tiles around (x,y)", args -> {
+            int x = Strings.parseInt(args[0]), y = Strings.parseInt(args[1]), r = args.length > 2 ? Strings.parseInt(args[2]) : 1;
+            for(int yy = y + r; yy >= y - r; yy--){
+                StringBuilder sb = new StringBuilder();
+                for(int xx = x - r; xx <= x + r; xx++){
+                    Tile t = world.tile(xx, yy);
+                    sb.append(String.format("%-28s", t == null ? "-" : t.block().name + (t.build != null ? "@" + t.build.rotation + " i" + (t.build.items == null ? 0 : t.build.items.total()) : "")));
+                }
+                Log.info("[abtile] @: @", yy, sb);
+            }
         });
 
         handler.register("abcount", "AutoBuild: report items collected by the abtest vault", args -> {
-            if(vault == null){ Log.err("run abtest first"); return; }
-            int n = vault.items.total();
+            if(vaults.isEmpty()){ Log.err("run abtest first"); return; }
+            int n = 0;
+            StringBuilder per = new StringBuilder();
+            for(Building v : vaults){ n += v.items.total(); per.append(per.length() > 0 ? "+" : "").append(v.items.total()); }
+            Log.info("[abcount] per output: @", per);
             float secs = Time.timeSinceMillis(lastTime) / 1000f;
             Log.info("[abcount] vault=@ items, +@ in @s = @/s (predicted @/s)", n, n - lastCount, Strings.autoFixed(secs, 1),
                 Strings.autoFixed((n - lastCount) / secs, 2), Strings.autoFixed(predicted, 2));
             lastCount = n; lastTime = Time.millis();
         });
+    }
+
+    /** "auto" (empty list) or comma-separated E:0.3 / @dx:dy (interior, relative to the region corner) */
+    static boolean parsePorts(DrillFieldJob job, String spec, Seq<DrillFieldJob.Port> out){
+        out.clear();
+        if(spec.equalsIgnoreCase("auto")) return true;
+        for(String s : spec.split(",")){
+            if(s.startsWith("@")){
+                String[] xy = s.substring(1).split(":");
+                if(xy.length != 2) return false;
+                out.add(DrillFieldJob.Port.at(job.ax + Strings.parseInt(xy[0], 0), job.ay + Strings.parseInt(xy[1], 0)));
+            }else{
+                String[] sf = s.split(":");
+                int side = "ENWS".indexOf(Character.toUpperCase(sf[0].charAt(0)));
+                if(side < 0) return false;
+                out.add(DrillFieldJob.Port.edge(side, sf.length > 1 ? Strings.parseFloat(sf[1], 0.5f) : 0.5f));
+            }
+        }
+        return true;
     }
 
     /** Pick the size x size window with the most ore of this item (2D prefix sums). */
