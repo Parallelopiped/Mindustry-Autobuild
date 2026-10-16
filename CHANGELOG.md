@@ -7,6 +7,14 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-17
+### Fixed
+- Material efficiency on large regions mined only a few patches (or produced plans with negative
+  scores): logistics were priced like drills, so remote patches never paid for their connection.
+  Logistics prices in efficiency mode are now 1/5 (belt 0.05, bridge 0.4, water 0.06, node 0.2) and
+  drill-first uses the same prices. Big sparse regions: output x2.5, no negative scores;
+  ordinary fields: output +3.2%, ore per drill unchanged.
+
 ## [0.8.0] - 2026-10-17
 ### Added
 - **Drill-first layout family**: repeatedly picks the drill (any type) with the best
@@ -145,6 +153,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.8.1]: #
 [0.8.0]: #
 [0.7.0]: #
 [0.6.0]: #

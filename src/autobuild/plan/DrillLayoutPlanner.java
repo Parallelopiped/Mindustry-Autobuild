@@ -326,7 +326,7 @@ public class DrillLayoutPlanner{
         }
         score = 0;
         for(Feeder f : feeders) for(int[] d : f.drills) score += drillValue(d);
-        score -= beltCost() * belts + bridgeCost() * bridges + (p.mode == Mode.OUTPUT ? 0.02 : 0.3) * waterTiles + (p.mode == Mode.OUTPUT ? 0.05 : 1.0) * nodes;
+        score -= beltCost() * belts + bridgeCost() * bridges + waterTileCost() * waterTiles + nodeCost() * nodes;
         snapshot("done", true);
         return true;
     }
@@ -401,7 +401,8 @@ public class DrillLayoutPlanner{
      * together with its connection.
      */
     void drillFirst(){
-        double kappa = p.mode == Mode.OUTPUT ? 0.12 : 0.4;
+        // A* cost units (tiles, bridge ~1.5-2.5) -> ore tiles of value
+        double kappa = p.mode == Mode.OUTPUT ? 0.12 : 0.15;
         List<int[]> cands = candidates();
         double vmax = 0;
         for(int[] c : cands) vmax = Math.max(vmax, drillValue(c[0], c[1], c[2]));
@@ -438,7 +439,9 @@ public class DrillLayoutPlanner{
             if(path == null) break;
             int[] o = owner.get(lastStart);
             int ty = o[1], u = o[2], v = o[3], st = sz[ty];
-            if(drillValue(ty, u, v) - kappa * path.size() <= 0) break; // nothing left that pays for its connection
+            double material = 0;
+            for(int[] e : path) material += e[2] == BRIDGE ? bridgeCost() : beltCost();
+            if(drillValue(ty, u, v) - material <= 0) break; // nothing left that pays for its connection
             boolean overlap = false;
             for(int[] e : path) if(e[0] >= u && e[0] < u + st && e[1] >= v && e[1] < v + st) overlap = true;
             if(overlap){ bannedStarts.add(key(o[0], o[4] * H + o[5])); continue; }
@@ -521,7 +524,7 @@ public class DrillLayoutPlanner{
             for(int[] tg : targets) occ[tg[0]][tg[1]] = FREE;
             if(leg == null) continue;
             double gain = drillValue(type(d), d[0], d[1], true) - drillValue(type(d), d[0], d[1], false);
-            if(gain <= (p.mode == Mode.OUTPUT ? 0.02 : 0.3) * (leg.size() + 1)) continue;
+            if(gain <= waterTileCost() * (leg.size() + 1)) continue;
             for(int[] el : leg){
                 placeWater(el);
                 if(el[2] == LBRIDGE) markLink(el[0], el[1], el[4], el[5]);
@@ -706,10 +709,20 @@ public class DrillLayoutPlanner{
     /** lanes / water rows are split where drills are further apart than this (tiles) */
     static final int splitGap = 2;
 
-    double beltCost(){ return p.mode == Mode.OUTPUT ? 0.01 : 0.25; }
+    /*
+     * Material prices in "ore tiles of output". Logistics are built once while drills keep producing,
+     * so in efficiency mode they weigh 1/5 of the raw material ratio (a bridge ~12 conveyors):
+     * otherwise remote ore patches in a large region never pay for their connection and plans with
+     * negative scores win. The drill-on-ore threshold (0.5 * size^2) is what efficiency means.
+     */
+    double beltCost(){ return p.mode == Mode.OUTPUT ? 0.01 : 0.05; }
+
+    double waterTileCost(){ return p.mode == Mode.OUTPUT ? 0.02 : 0.06; }
+
+    double nodeCost(){ return p.mode == Mode.OUTPUT ? 0.05 : 0.2; }
 
     /** A bridge costs ~12x a conveyor in materials. */
-    double bridgeCost(){ return p.mode == Mode.OUTPUT ? 0.05 : 2.0; }
+    double bridgeCost(){ return p.mode == Mode.OUTPUT ? 0.05 : 0.4; }
 
     // ------------------------------------------------------------------ layout: lanes
 
@@ -841,7 +854,7 @@ public class DrillLayoutPlanner{
      */
     double chooseLanesWater(){
         Lane[][] memo = new Lane[H][12];
-        double rowCost = (p.mode == Mode.OUTPUT ? 0.02 : 0.3) * W;
+        double rowCost = waterTileCost() * W;
         double[][] f = new double[H + 3][2];
         int[][] choice = new int[H + 1][2];
         for(int i = H - 1; i >= 0; i--){
