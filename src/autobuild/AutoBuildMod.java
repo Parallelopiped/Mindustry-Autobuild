@@ -311,6 +311,7 @@ public class AutoBuildMod extends Mod{
 
         c.check("Use item bridges (denser layouts, routes over obstacles)", job.bridges, b -> job.bridges = b)
             .disabled(b -> !DrillFieldJob.available(Blocks.itemBridge)).row();
+        c.check("Fill gaps with smaller drills (up to the chosen tier)", job.mixDrills, b -> job.mixDrills = b).row();
 
         Seq<Block> conduits = Seq.with(Blocks.conduit, Blocks.pulseConduit).select(DrillFieldJob::available);
         if(!conduits.contains(job.conduit) && !conduits.isEmpty()) job.conduit = conduits.first();

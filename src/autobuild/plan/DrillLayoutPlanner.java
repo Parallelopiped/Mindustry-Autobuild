@@ -36,6 +36,8 @@ public class DrillLayoutPlanner{
         public final int kind, u, v, dir, ore;
         /** BRIDGE/LBRIDGE: link target (equal to u,v for an end bridge). DRILL: dir = 1 if water-boosted */
         public final int lu, lv;
+        /** DRILL: drill type index and footprint size */
+        public int type, size = 1;
         Place(int kind, int u, int v, int dir, int ore){ this(kind, u, v, dir, ore, u, v); }
         Place(int kind, int u, int v, int dir, int ore, int lu, int lv){
             this.kind = kind; this.u = u; this.v = v; this.dir = dir; this.ore = ore; this.lu = lu; this.lv = lv;
@@ -74,6 +76,18 @@ public class DrillLayoutPlanner{
          * routing order and turn penalty change, the lattice search uses another seed.
          */
         public int variant;
+        /**
+         * Optional extra drill types (smaller / lower tier drills that fill gaps). Index 0 is the
+         * chosen drill and must have the largest size. Null: a single type from drillSize, drop,
+         * drillOk and power.
+         */
+        public int[] typeSize;
+        /** output per ore tile relative to type 0 */
+        public double[] typeRate;
+        public boolean[] typePowered;
+        /** per type: mineable item per tile, and footprint placeable at local min corner */
+        public int[][][] typeDrop;
+        public boolean[][][] typeDrillOk;
     }
 
     /** Receives snapshots of the plan while it is being computed (called on the planning thread). */
@@ -104,8 +118,17 @@ public class DrillLayoutPlanner{
 
     // ---- work state ----
     int[][] occ;
-    /** target ore under a drill at min corner (u,v) if it fits and would mine the target, else 0 */
-    int[][] ore;
+    /** direction of the link of every routed, linked item bridge (a merge target); -1 elsewhere */
+    int[][] bridgeLink;
+    /** per type: target ore under a drill at min corner (u,v) if it fits and would mine the target, else 0 */
+    int[][][] ore;
+    /** drill types */
+    final int T;
+    final int[] sz;
+    final double[] rate;
+    final boolean[] powered;
+    final int[][][] tDrop;
+    final boolean[][][] tOk;
     final Random rand;
     long lastSnapshot;
     final float turnCost;
@@ -123,6 +146,13 @@ public class DrillLayoutPlanner{
 
     public DrillLayoutPlanner(Params p){
         this.p = p; this.W = p.W; this.H = p.H; this.s = p.drillSize;
+        if(p.typeSize == null){
+            T = 1; sz = new int[]{p.drillSize}; rate = new double[]{1}; powered = new boolean[]{p.power};
+            tDrop = new int[][][]{p.drop}; tOk = new boolean[][][]{p.drillOk};
+        }else{
+            T = p.typeSize.length; sz = p.typeSize; rate = p.typeRate; powered = p.typePowered;
+            tDrop = p.typeDrop; tOk = p.typeDrillOk;
+        }
         this.rand = new Random(p.seed * 31 + p.variant * 7919L);
         this.turnCost = p.variant == 0 ? 0.4f : 0.15f + rand.nextFloat() * 0.8f;
     }
@@ -180,7 +210,7 @@ public class DrillLayoutPlanner{
             buildWater();
             double wetValue = 0;
             for(Feeder f : wet){
-                for(int[] d : f.drills) wetValue += drillValue(d[0], d[1], d[2] == 1);
+                for(int[] d : f.drills) wetValue += drillValue(d);
                 wetValue -= beltCost() * (f.belts.size() + 1);
             }
             wetValue -= (p.mode == Mode.OUTPUT ? 0.02 : 0.3) * water.size();
@@ -202,6 +232,8 @@ public class DrillLayoutPlanner{
         for(int[] row : occ) Arrays.fill(row, FREE);
         for(Feeder f : feeders) mark(f, true);
         for(int[] el : water) occ[el[0]][el[1]] = OWATER;
+        bridgeLink = new int[W][H];
+        for(int[] row : bridgeLink) Arrays.fill(row, -1);
         snapshot("layout: " + layout, true);
 
         // route, closest to the port first
@@ -228,10 +260,12 @@ public class DrillLayoutPlanner{
         feeders = routed;
         if(segmentsRouted == 0){ failure = "no lane could be routed to the output port"; return false; }
 
-        if(p.power){
+        boolean anyPowered = false;
+        for(boolean b : powered) anyPowered |= b;
+        if(anyPowered){
             List<int[]> drillList = new ArrayList<>();
-            for(Feeder f : feeders) drillList.addAll(f.drills);
-            nodeList = placePower(drillList);
+            for(Feeder f : feeders) for(int[] d : f.drills) if(powered[type(d)]) drillList.add(d);
+            if(!drillList.isEmpty()) nodeList = placePower(drillList);
         }
 
         places.clear();
@@ -246,11 +280,18 @@ public class DrillLayoutPlanner{
             }
         }
         score = 0;
-        for(Feeder f : feeders) for(int[] d : f.drills) score += drillValue(d[0], d[1], d.length > 2 && d[2] == 1);
+        for(Feeder f : feeders) for(int[] d : f.drills) score += drillValue(d);
         score -= beltCost() * belts + bridgeCost() * bridges + (p.mode == Mode.OUTPUT ? 0.02 : 0.3) * waterTiles + (p.mode == Mode.OUTPUT ? 0.05 : 1.0) * nodes;
         snapshot("done", true);
         return true;
     }
+
+    /** drill records are {u, v, wet, type} */
+    int sz(int[] d){ return d.length > 3 ? sz[d[3]] : sz[0]; }
+
+    int type(int[] d){ return d.length > 3 ? d[3] : 0; }
+
+    boolean wet(int[] d){ return d.length > 2 && d[2] == 1; }
 
     void checkCancel(){
         if(cancelled) throw new CancelledException();
@@ -283,7 +324,11 @@ public class DrillLayoutPlanner{
             }else{
                 out.add(new Place(BELT, f.su, f.sv, 0, 0));
             }
-            for(int[] d : f.drills) out.add(new Place(DRILL, d[0], d[1], d.length > 2 ? d[2] : 0, ore[d[0]][d[1]]));
+            for(int[] d : f.drills){
+                Place pl = new Place(DRILL, d[0], d[1], wet(d) ? 1 : 0, ore[type(d)][d[0]][d[1]]);
+                pl.type = type(d); pl.size = sz(d);
+                out.add(pl);
+            }
         }
         return out;
     }
@@ -301,19 +346,23 @@ public class DrillLayoutPlanner{
     // ------------------------------------------------------------------ ore
 
     void computeOre(){
-        ore = new int[W][H];
+        ore = new int[T][W][H];
         int[] counts = new int[4096];
-        for(int u = 0; u + s <= W - 1; u++){ // column W-1 is the collector
-            for(int v = 0; v + s <= H; v++){
-                if(!p.drillOk[u][v]) continue;
-                for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) if(p.drop[x][y] >= 0) counts[p.drop[x][y]]++;
-                int mined = -1;
-                for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++){
-                    int d = p.drop[x][y];
-                    if(d >= 0 && (mined < 0 || minedBefore(d, counts[d], mined, counts[mined]))) mined = d;
+        for(int ty = 0; ty < T; ty++){
+            int st = sz[ty];
+            int[][] drop = tDrop[ty];
+            for(int u = 0; u + st <= W - 1; u++){ // column W-1 is the collector
+                for(int v = 0; v + st <= H; v++){
+                    if(!tOk[ty][u][v]) continue;
+                    for(int x = u; x < u + st; x++) for(int y = v; y < v + st; y++) if(drop[x][y] >= 0) counts[drop[x][y]]++;
+                    int mined = -1;
+                    for(int x = u; x < u + st; x++) for(int y = v; y < v + st; y++){
+                        int d = drop[x][y];
+                        if(d >= 0 && (mined < 0 || minedBefore(d, counts[d], mined, counts[mined]))) mined = d;
+                    }
+                    ore[ty][u][v] = mined == p.target ? counts[mined] : 0;
+                    for(int x = u; x < u + st; x++) for(int y = v; y < v + st; y++) if(drop[x][y] >= 0) counts[drop[x][y]] = 0;
                 }
-                ore[u][v] = mined == p.target ? counts[mined] : 0;
-                for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) if(p.drop[x][y] >= 0) counts[p.drop[x][y]] = 0;
             }
         }
     }
@@ -321,7 +370,7 @@ public class DrillLayoutPlanner{
     /** Target ore a drill at min corner (u,v) would mine (0 if it would mine something else). */
     public int oreUnder(int u, int v){
         if(ore == null) computeOre();
-        return ore[u][v];
+        return ore[0][u][v];
     }
 
     /**
@@ -335,12 +384,16 @@ public class DrillLayoutPlanner{
         return a > b;
     }
 
-    double drillValue(int u, int v){
-        if(u < 0 || v < 0 || v + s > H || u + s > W - 1) return 0;
-        int o = ore[u][v];
-        if(o == 0 || masked(u, v, s)) return 0;
+    double drillValue(int u, int v){ return drillValue(0, u, v); }
+
+    /** value of a drill of type ty at min corner (u,v): its output (ore x relative speed), minus costs */
+    double drillValue(int ty, int u, int v){
+        int st = sz[ty];
+        if(u < 0 || v < 0 || v + st > H || u + st > W - 1) return 0;
+        int o = ore[ty][u][v];
+        if(o == 0 || masked(u, v, st)) return 0;
         // efficiency: a drill must sit mostly on ore to be worth its cost
-        double val = p.mode == Mode.OUTPUT ? o - 0.01 : o - 0.5 * s * s;
+        double val = p.mode == Mode.OUTPUT ? o * rate[ty] - 0.01 : o * rate[ty] - 0.5 * st * st;
         return val > 0 ? val * noiseAt(u, v) : val;
     }
 
@@ -359,12 +412,16 @@ public class DrillLayoutPlanner{
     }
 
     /** Value of a drill that gets water (if `wet`), or the plain value. */
-    double drillValue(int u, int v, boolean wet){
-        double base = drillValue(u, v);
+    double drillValue(int u, int v, boolean wet){ return drillValue(0, u, v, wet); }
+
+    double drillValue(int ty, int u, int v, boolean wet){
+        double base = drillValue(ty, u, v);
         if(!wet || base <= 0) return base;
-        int o = ore[u][v];
-        return (p.mode == Mode.OUTPUT ? o * p.waterBoost - 0.01 : o * p.waterBoost - 0.5 * s * s - 0.5) * noiseAt(u, v);
+        int o = ore[ty][u][v], st = sz[ty];
+        return (p.mode == Mode.OUTPUT ? o * rate[ty] * p.waterBoost - 0.01 : o * rate[ty] * p.waterBoost - 0.5 * st * st - 0.5) * noiseAt(u, v);
     }
+
+    double drillValue(int[] d){ return drillValue(type(d), d[0], d[1], wet(d)); }
 
     /** Water row tile can carry a conduit/router. */
     boolean waterTileOk(int x, int r){
@@ -375,6 +432,17 @@ public class DrillLayoutPlanner{
     boolean laneOk(int u, int v){
         return p.beltOk[u][v] && !mask[u][v];
     }
+
+    /**
+     * Routing costs are in occupied tiles: a conveyor step occupies one tile, a bridge jump of any
+     * length occupies one tile (the landing) plus a material premium.
+     */
+    float jumpCost(){ return p.mode == Mode.OUTPUT ? 1.5f : 2.5f; }
+
+    float liquidJumpCost(){ return p.mode == Mode.OUTPUT ? 1.3f : 2.5f; }
+
+    /** lanes / water rows are split where drills are further apart than this (tiles) */
+    static final int splitGap = 2;
 
     double beltCost(){ return p.mode == Mode.OUTPUT ? 0.01 : 0.25; }
 
@@ -426,53 +494,81 @@ public class DrillLayoutPlanner{
             if(!laneOk(u, v)){ u++; continue; }
             int a = u;
             while(u < W - 1 && laneOk(u, v)) u++;
-            Feeder g = segment(v, a, u - 1, sides, wetTop, wetBot);
-            if(g != null){ l.segs.add(g); l.value += g.value; }
+            for(Feeder g : segment(v, a, u - 1, sides, wetTop, wetBot)){ l.segs.add(g); l.value += g.value; }
         }
         return memo[v][k] = l;
     }
 
-    /** Best drills beside a straight belt run [a,b] in row v, via 1D DP per side. */
-    Feeder segment(int v, int a, int b, int sides, boolean wetTop, boolean wetBot){
-        Feeder g = new Feeder();
-        int minU = Integer.MAX_VALUE, maxU = -1;
+    /**
+     * Best drills beside a straight belt run [a,b] in row v, via 1D DP per side; the drills are
+     * then split into clusters wherever they are more than `splitGap` tiles apart, and each
+     * cluster gets its own short belt (routing connects the clusters, e.g. with bridges).
+     */
+    List<Feeder> segment(int v, int a, int b, int sides, boolean wetTop, boolean wetBot){
+        List<int[]> chosen = new ArrayList<>();
         int n = b - a + 1;
         for(int side = 0; side < 2; side++){
             if((sides & (1 << side)) == 0) continue;
-            int dv = side == 0 ? v + 1 : v - s;
             boolean wetSide = side == 0 ? wetTop : wetBot;
             int wRow = side == 0 ? v + s + 1 : v - s - 1;
             double[] dp = new double[n + 1];
-            boolean[] take = new boolean[n + 1];
-            // dp[i] = best using columns a+i..b
+            int[] take = new int[n + 1]; // drill type placed at column a+i, or -1
+            // dp[i] = best using columns a+i..b; any drill type, flush against the lane
             for(int i = n - 1; i >= 0; i--){
-                dp[i] = dp[i + 1];
-                if(i + s <= n){
-                    double val = drillValue(a + i, dv, wetSide && wettable(a + i, wRow));
-                    if(val > 0 && val + dp[i + s] > dp[i]){ dp[i] = val + dp[i + s]; take[i] = true; }
+                dp[i] = dp[i + 1]; take[i] = -1;
+                for(int ty = 0; ty < T; ty++){
+                    int st = sz[ty];
+                    if(i + st > n) continue;
+                    int dv = side == 0 ? v + 1 : v - st;
+                    // only a full-height drill reaches the water row on the far side
+                    boolean wet = wetSide && st == s && wettable(a + i, st, wRow);
+                    double val = drillValue(ty, a + i, dv, wet);
+                    if(val > 0 && val + dp[i + st] > dp[i]){ dp[i] = val + dp[i + st]; take[i] = ty; }
                 }
             }
             for(int i = 0; i < n; ){
-                if(take[i]){
-                    int u = a + i;
-                    boolean wet = wetSide && wettable(u, wRow);
-                    g.drills.add(new int[]{u, dv, wet ? 1 : 0});
-                    g.value += drillValue(u, dv, wet);
-                    minU = Math.min(minU, u); maxU = Math.max(maxU, u + s - 1);
-                    i += s;
+                if(take[i] >= 0){
+                    int ty = take[i], st = sz[ty], u = a + i;
+                    int dv = side == 0 ? v + 1 : v - st;
+                    boolean wet = wetSide && st == s && wettable(u, st, wRow);
+                    chosen.add(new int[]{u, dv, wet ? 1 : 0, ty});
+                    i += st;
                 }else i++;
             }
         }
-        if(g.drills.isEmpty()) return null;
-        for(int u = minU; u < maxU; u++) g.belts.add(new int[]{u, v});
-        g.su = maxU; g.sv = v; g.landed = false;
-        g.value -= beltCost() * (maxU - minU + 1);
-        return g.value > 0 ? g : null;
+        List<Feeder> out = new ArrayList<>();
+        if(chosen.isEmpty()) return out;
+        chosen.sort(Comparator.comparingInt(d -> d[0]));
+        Feeder g = null;
+        int end = Integer.MIN_VALUE;
+        for(int[] d : chosen){
+            if(g == null || d[0] > end + splitGap){
+                if(g != null) closeSegment(g, v, out);
+                g = new Feeder();
+                g.su = d[0]; // temporarily: cluster start
+            }
+            g.drills.add(d);
+            g.value += drillValue(d);
+            end = Math.max(end, d[0] + sz(d) - 1);
+            g.sv = end; // temporarily: cluster end
+        }
+        closeSegment(g, v, out);
+        return out;
     }
 
-    /** a drill at columns u..u+s-1 can get a router in water row r */
-    boolean wettable(int u, int r){
-        for(int x = u; x < u + s; x++) if(waterTileOk(x, r)) return true;
+    /** turn a cluster (su..sv temporarily hold its column span) into a lane feeder */
+    void closeSegment(Feeder g, int v, List<Feeder> out){
+        int minU = g.su, maxU = g.sv;
+        for(int u = minU; u < maxU; u++) g.belts.add(new int[]{u, v});
+        g.su = maxU; g.sv = v; g.landed = false;
+        // belt span, plus roughly what connecting it costs
+        g.value -= beltCost() * (maxU - minU + 1 + 2);
+        if(g.value > 0) out.add(g);
+    }
+
+    /** a drill at columns u..u+st-1 can get a router in water row r */
+    boolean wettable(int u, int st, int r){
+        for(int x = u; x < u + st; x++) if(waterTileOk(x, r)) return true;
         return false;
     }
 
@@ -571,20 +667,19 @@ public class DrillLayoutPlanner{
         water.clear();
         waterAt.clear();
         List<int[]> wetList = new ArrayList<>();
-        for(Feeder f : feeders) for(int[] d : f.drills) if(d.length > 2 && d[2] == 1) wetList.add(d);
+        for(Feeder f : feeders) for(int[] d : f.drills) if(wet(d)) wetList.add(d);
 
         // routers per water row: fewest points stabbing every adjacent wet drill's columns
         TreeMap<Integer, TreeSet<Integer>> routers = new TreeMap<>();
         for(int r : waterRows){
             List<int[]> iv = new ArrayList<>();
-            for(int[] d : wetList) if(d[1] == r + 1 || d[1] + s == r) iv.add(d);
-            iv.sort(Comparator.comparingInt(d -> d[0]));
+            for(int[] d : wetList) if(d[1] == r + 1 || d[1] + sz(d) == r) iv.add(d);
             TreeSet<Integer> xs = new TreeSet<>();
-            iv.sort(Comparator.comparingInt(d -> d[0] + s - 1));
+            iv.sort(Comparator.comparingInt(d -> d[0] + sz(d) - 1));
             for(int[] d : iv){
                 Integer hit = xs.ceiling(d[0]);
-                if(hit != null && hit <= d[0] + s - 1) continue;
-                for(int c = d[0] + s - 1; c >= d[0]; c--) if(waterTileOk(c, r)){ xs.add(c); break; }
+                if(hit != null && hit <= d[0] + sz(d) - 1) continue;
+                for(int c = d[0] + sz(d) - 1; c >= d[0]; c--) if(waterTileOk(c, r)){ xs.add(c); break; }
             }
             if(!xs.isEmpty()) routers.put(r, xs);
         }
@@ -598,10 +693,10 @@ public class DrillLayoutPlanner{
 
         // a drill stays wet only if a router or bridge-conduit end sits next to it
         for(Feeder f : feeders) for(int[] d : f.drills){
-            if(d.length < 3 || d[2] == 0) continue;
+            if(!wet(d)) continue;
             boolean ok = false;
-            for(int x = d[0]; x < d[0] + s && !ok; x++){
-                ok = feeds(key(x, d[1] - 1), 1) || feeds(key(x, d[1] + s), 3);
+            for(int x = d[0]; x < d[0] + sz(d) && !ok; x++){
+                ok = feeds(key(x, d[1] - 1), 1) || feeds(key(x, d[1] + sz(d)), 3);
             }
             if(!ok) d[2] = 0;
         }
@@ -621,11 +716,21 @@ public class DrillLayoutPlanner{
             int r = en.getKey();
             TreeSet<Integer> left = new TreeSet<>(en.getValue());
             while(!left.isEmpty()){
+                // contiguous buildable stretch around the first router, then split it into
+                // clusters of routers no more than splitGap+1 apart; each cluster is connected on its own
                 int x = left.first(), a = x, b = x;
                 while(a - 1 >= 0 && waterPlaceable(a - 1, r)) a--;
                 while(b + 1 <= W - 2 && waterPlaceable(b + 1, r)) b++;
-                runs.add(new int[]{r, a, b});
-                left.removeAll(new ArrayList<>(left.subSet(a, true, b, true)));
+                List<Integer> in = new ArrayList<>(left.subSet(a, true, b, true));
+                int lo = in.get(0), prev = lo;
+                for(int i = 1; i <= in.size(); i++){
+                    if(i == in.size() || in.get(i) - prev > splitGap + 1){
+                        runs.add(new int[]{r, lo, prev});
+                        if(i < in.size()) lo = in.get(i);
+                    }
+                    if(i < in.size()) prev = in.get(i);
+                }
+                left.removeAll(in);
             }
         }
         runs.sort(Comparator.comparingInt(rn -> Math.abs(rn[0] - waterV) + Math.abs(rn[1] - waterU)));
@@ -713,13 +818,16 @@ public class DrillLayoutPlanner{
                 }
             }
         }
+        long[] srcOf = new long[N];
         for(int[] e : water){
             for(int d = 0; d < 4; d++){
                 int nu = e[0] + DU[d], nv = e[1] + DV[d];
-                if(!feeds(key(e[0], e[1]), d) || !liquidFree(nu, nv)) continue;
+                // a conduit can become a branch point by turning it into a router (small premium)
+                boolean branch = e[2] == CONDUIT && d != (e[3] + 2) % 4;
+                if(!(feeds(key(e[0], e[1]), d) || branch) || !liquidFree(nu, nv)) continue;
                 int id = sid(nu, nv, d, 0);
-                float c = stepCost(nu, nv);
-                if(c < cost[id]){ cost[id] = c; prev[id] = -1; open.add(new float[]{c + hRun(nu, nv, r, a, b), id}); }
+                float c = stepCost(nu, nv) + (branch ? 0.6f : 0f);
+                if(c < cost[id]){ cost[id] = c; prev[id] = -1; srcOf[id] = key(e[0], e[1]); open.add(new float[]{c + hRun(nu, nv, r, a, b), id}); }
             }
         }
         while(!open.isEmpty()){
@@ -729,7 +837,13 @@ public class DrillLayoutPlanner{
                 int k = id - N;
                 if(cur[0] > cost[id] + 1e-3f) continue;
                 junction[0] = targets.get(k)[0]; junction[1] = targets.get(k)[1];
-                return prev[id] == -2 ? new ArrayList<>() : liquidPath(prev, prev[id], goalDir[k]);
+                if(prev[id] == -2) return new ArrayList<>();
+                // the leg may branch off a conduit: that conduit becomes a router
+                int first = prev[id];
+                while(prev[first] != -1) first = prev[first];
+                int[] src = waterAt.get(srcOf[first]);
+                if(src != null && src[2] == CONDUIT) src[2] = LROUTER;
+                return liquidPath(prev, prev[id], goalDir[k]);
             }
             int L = id & 1, d = (id >> 1) & 3, t = id >> 3, u = t / H, v = t % H;
             float c = cost[id];
@@ -750,7 +864,7 @@ public class DrillLayoutPlanner{
                     int ju = u + DU[nd] * jump, jv = v + DV[nd] * jump;
                     if(ju < 0 || jv < 0 || ju >= W || jv >= H) break;
                     if(!liquidFree(ju, jv)) continue;
-                    relax(open, cost, prev, id, sid(ju, jv, nd, 1), c + 3f + 0.1f * jump + turn, hRun(ju, jv, r, a, b));
+                    relax(open, cost, prev, id, sid(ju, jv, nd, 1), c + liquidJumpCost() + 0.05f * jump + turn, hRun(ju, jv, r, a, b));
                 }
             }
         }
@@ -902,20 +1016,23 @@ public class DrillLayoutPlanner{
                     }else cur = null;
                 }
             }
-            for(int u = 0; u + s <= W - 1; u++){
-                for(int v = 0; v + s <= H; v++){
-                    double val = drillValue(u, v);
-                    if(val <= 0 || coversBridge(u, v)) continue;
-                    int[] at = attach(u, v);
-                    if(at == null) continue;
-                    cands.add(new int[]{u, v, at[0], at[1]});
-                    values.add(val);
+            for(int ty = 0; ty < T; ty++){
+                int st = sz[ty];
+                for(int u = 0; u + st <= W - 1; u++){
+                    for(int v = 0; v + st <= H; v++){
+                        double val = drillValue(ty, u, v);
+                        if(val <= 0 || coversBridge(u, v, st)) continue;
+                        int[] at = attach(u, v, st);
+                        if(at == null) continue;
+                        cands.add(new int[]{u, v, at[0], at[1], ty});
+                        values.add(val);
+                    }
                 }
             }
         }
 
-        boolean coversBridge(int u, int v){
-            for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) if(chain[x][y] >= 0) return true;
+        boolean coversBridge(int u, int v, int st){
+            for(int x = u; x < u + st; x++) for(int y = v; y < v + st; y++) if(chain[x][y] >= 0) return true;
             return false;
         }
 
@@ -930,7 +1047,7 @@ public class DrillLayoutPlanner{
         }
 
         /** first bridge the drill can output into: {chain, index} */
-        int[] attach(int u, int v){
+        int[] attach(int u, int v, int s){
             for(int i = 0; i < s; i++){
                 // bridge east of the drill sees it on its west face; a bridge west of it would see it on the (rejected) link face
                 if(accepts(u + s, v + i, 2)) return new int[]{chain[u + s][v + i], index[u + s][v + i]};
@@ -955,20 +1072,22 @@ public class DrillLayoutPlanner{
             boolean[] sel = new boolean[cands.size()];
             for(int i : order){
                 int[] c = cands.get(i);
-                if(overlaps(used, c[0], c[1])) continue;
-                set(used, c[0], c[1], true);
+                if(overlaps(used, c)) continue;
+                set(used, c, true);
                 sel[i] = true;
             }
             return sel;
         }
 
-        boolean overlaps(boolean[][] used, int u, int v){
-            for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) if(used[x][y]) return true;
+        boolean overlaps(boolean[][] used, int[] c){
+            int st = sz[c[4]];
+            for(int x = c[0]; x < c[0] + st; x++) for(int y = c[1]; y < c[1] + st; y++) if(used[x][y]) return true;
             return false;
         }
 
-        void set(boolean[][] used, int u, int v, boolean b){
-            for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) used[x][y] = b;
+        void set(boolean[][] used, int[] c, boolean b){
+            int st = sz[c[4]];
+            for(int x = c[0]; x < c[0] + st; x++) for(int y = c[1]; y < c[1] + st; y++) used[x][y] = b;
         }
 
         double value(boolean[] sel){
@@ -987,7 +1106,7 @@ public class DrillLayoutPlanner{
             for(int i = 0; i < sel.length; i++){
                 if(!sel[i]) continue;
                 int[] c = cands.get(i);
-                drillsOf.get(c[2]).add(new int[]{c[0], c[1], 0});
+                drillsOf.get(c[2]).add(new int[]{c[0], c[1], 0, c[4]});
                 val[c[2]] += values.get(i);
                 lo[c[2]] = Math.min(lo[c[2]], c[3]);
                 hi[c[2]] = Math.max(hi[c[2]], c[3]);
@@ -1015,7 +1134,7 @@ public class DrillLayoutPlanner{
             int K = 3 * s; // window side
             if(W - 1 < K || H < K) return;
             boolean[][] used = new boolean[W][H];
-            for(int i = 0; i < sel.length; i++) if(sel[i]) set(used, cands.get(i)[0], cands.get(i)[1], true);
+            for(int i = 0; i < sel.length; i++) if(sel[i]) set(used, cands.get(i), true);
             for(int it = 0; it < iterations; it++){
                 if((it & 31) == 0) checkCancel();
                 int wu = rand.nextInt(W - K), wv = rand.nextInt(H - K + 1);
@@ -1024,12 +1143,12 @@ public class DrillLayoutPlanner{
                 List<Integer> out = new ArrayList<>();
                 for(int i = 0; i < sel.length; i++){
                     int[] c = cands.get(i);
-                    if(sel[i] && inside(c, wu, wv, K)){ sel[i] = false; set(used, c[0], c[1], false); removed += values.get(i); out.add(i); }
+                    if(sel[i] && inside(c, wu, wv, K)){ sel[i] = false; set(used, c, false); removed += values.get(i); out.add(i); }
                 }
                 List<Integer> local = new ArrayList<>();
                 for(int i = 0; i < sel.length; i++){
                     int[] c = cands.get(i);
-                    if(inside(c, wu, wv, K) && !overlaps(used, c[0], c[1])) local.add(i);
+                    if(inside(c, wu, wv, K) && !overlaps(used, c)) local.add(i);
                 }
                 List<Integer> best = new ArrayList<>();
                 double[] bestVal = {-1};
@@ -1037,15 +1156,16 @@ public class DrillLayoutPlanner{
                 for(int i = local.size() - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + values.get(local.get(i));
                 dfs(local, 0, used, new ArrayList<>(), 0, best, bestVal, suffix);
                 if(bestVal[0] >= removed){
-                    for(int i : best){ sel[i] = true; set(used, cands.get(i)[0], cands.get(i)[1], true); }
+                    for(int i : best){ sel[i] = true; set(used, cands.get(i), true); }
                 }else{
-                    for(int i : out){ sel[i] = true; set(used, cands.get(i)[0], cands.get(i)[1], true); }
+                    for(int i : out){ sel[i] = true; set(used, cands.get(i), true); }
                 }
             }
         }
 
         boolean inside(int[] c, int wu, int wv, int K){
-            return c[0] >= wu && c[1] >= wv && c[0] + s <= wu + K && c[1] + s <= wv + K;
+            int st = sz[c[4]];
+            return c[0] >= wu && c[1] >= wv && c[0] + st <= wu + K && c[1] + st <= wv + K;
         }
 
         void dfs(List<Integer> local, int i, boolean[][] used, List<Integer> cur, double val, List<Integer> best, double[] bestVal, double[] suffix){
@@ -1053,19 +1173,19 @@ public class DrillLayoutPlanner{
             if(i >= local.size() || val + suffix[i] <= bestVal[0]) return;
             int idx = local.get(i);
             int[] c = cands.get(idx);
-            if(!overlaps(used, c[0], c[1])){
-                set(used, c[0], c[1], true);
+            if(!overlaps(used, c)){
+                set(used, c, true);
                 cur.add(idx);
                 dfs(local, i + 1, used, cur, val + values.get(idx), best, bestVal, suffix);
                 cur.remove(cur.size() - 1);
-                set(used, c[0], c[1], false);
+                set(used, c, false);
             }
             dfs(local, i + 1, used, cur, val, best, bestVal, suffix);
         }
     }
 
     void mark(Feeder f, boolean on){
-        for(int[] d : f.drills) fill(d[0], d[1], s, on ? ODRILL : FREE);
+        for(int[] d : f.drills) fill(d[0], d[1], sz(d), on ? ODRILL : FREE);
         for(int[] b : f.belts) occ[b[0]][b[1]] = on ? LANE : FREE;
         for(int[] b : f.bridges) occ[b[0]][b[1]] = on ? OBRIDGE : FREE;
         occ[f.su][f.sv] = on ? (f.landed ? OBRIDGE : LANE) : FREE;
@@ -1080,6 +1200,14 @@ public class DrillLayoutPlanner{
     void commit(Feeder f, List<int[]> path){
         f.path = path;
         for(int[] b : f.belts) occ[b[0]][b[1]] = 0;
+        // routed linked bridges become merge targets (chain bridges link to the next one, the last to the start tile)
+        for(int i = 0; i < f.bridges.size(); i++){
+            int[] b = f.bridges.get(i), n = i + 1 < f.bridges.size() ? f.bridges.get(i + 1) : new int[]{f.su, f.sv};
+            bridgeLink[b[0]][b[1]] = dirOf(b, n);
+        }
+        for(int[] e : path){
+            if(e[2] == BRIDGE && !(e[4] == e[0] && e[5] == e[1])) bridgeLink[e[0]][e[1]] = dirOf(e, new int[]{e[4], e[5]});
+        }
         for(int[] e : path){
             if(e[2] == BELT){
                 occ[e[0]][e[1]] = e[3];
@@ -1130,6 +1258,17 @@ public class DrillLayoutPlanner{
         return -1;
     }
 
+    /** free side tiles an end bridge at (u,v) would reserve as buffer */
+    float bufferTiles(int u, int v, int out, int arrival){
+        int back = (arrival + 2) % 4, n = 0;
+        for(int d = 0; d < 4; d++){
+            if(d == out || d == back) continue;
+            int x = u + DU[d], y = v + DV[d];
+            if(x >= 0 && y >= 0 && x < W && y < H && occ[x][y] == FREE) n++;
+        }
+        return n;
+    }
+
     /** Side neighbours of an end bridge at (u,v) (all but `out` and back) must not take items. */
     boolean dumpSafe(int u, int v, int out, int arrival){
         int back = (arrival + 2) % 4;
@@ -1174,11 +1313,15 @@ public class DrillLayoutPlanner{
                 // conveyor step (from a landed bridge this makes it an end bridge)
                 int nu = u + DU[nd], nv = v + DV[nd];
                 boolean endOk = L == 0 || (!bannedEnds.contains(t) && dumpSafe(u, v, nd, d));
+                // an end bridge reserves its free side tiles as a buffer: charge for them
+                float endCost = L == 1 ? bufferTiles(u, v, nd, d) : 0f;
                 if(endOk && nu >= 0 && nv >= 0 && nu < W && nv < H && !(toPort && isPort)){
                     int o = occ[nu][nv];
                     if(!toPort && o >= 0 && nd != (o + 2) % 4) return path(prev, id, nd); // merge into routed belt
+                    // feed a routed linked bridge from any side but its link side
+                    if(!toPort && bridgeLink[nu][nv] >= 0 && (nd + 2) % 4 != bridgeLink[nu][nv]) return path(prev, id, nd);
                     if(o == FREE && p.beltOk[nu][nv]){
-                        push(open, cost, prev, id, sid(nu, nv, nd, 0), c + 1f + turn, nu, nv, toPort);
+                        push(open, cost, prev, id, sid(nu, nv, nd, 0), c + 1f + turn + endCost, nu, nv, toPort);
                     }
                 }
                 // bridge jump
@@ -1186,8 +1329,15 @@ public class DrillLayoutPlanner{
                 for(int k = 2; k <= range; k++){
                     int ju = u + DU[nd] * k, jv = v + DV[nd] * k;
                     if(ju < 0 || jv < 0 || ju >= W || jv >= H) break;
+                    // link straight into a routed linked bridge (bridges accept any number of incoming links)
+                    if(!toPort && bridgeLink[ju][jv] >= 0){
+                        List<int[]> pth = path(prev, id, nd);
+                        int[] last = pth.get(pth.size() - 1);
+                        last[2] = BRIDGE; last[3] = nd; last[4] = ju; last[5] = jv;
+                        return pth;
+                    }
                     if(occ[ju][jv] != FREE || !p.beltOk[ju][jv] || (ju == W - 1 && jv == port)) continue;
-                    push(open, cost, prev, id, sid(ju, jv, nd, 1), c + 4f + 0.1f * k + turn, ju, jv, toPort);
+                    push(open, cost, prev, id, sid(ju, jv, nd, 1), c + jumpCost() + 0.05f * k + turn, ju, jv, toPort);
                 }
             }
         }
@@ -1264,7 +1414,7 @@ public class DrillLayoutPlanner{
                     double dist = 0;
                     for(int i = 0; i < drillList.size(); i++){
                         int[] d = drillList.get(i);
-                        if(!covered[i] && reaches(u, v, d[0], d[1], s)){ c++; dist += Math.abs(d[0] + s / 2f - u) + Math.abs(d[1] + s / 2f - v); }
+                        if(!covered[i] && reaches(u, v, d[0], d[1], sz(d))){ c++; dist += Math.abs(d[0] + sz(d) / 2f - u) + Math.abs(d[1] + sz(d) / 2f - v); }
                     }
                     if(c == 0) continue;
                     // most drills covered; ties go to the node closest to them
@@ -1276,7 +1426,7 @@ public class DrillLayoutPlanner{
                 nodes.add(new int[]{bu, bv});
                 int taken = 0;
                 for(int i = 0; i < drillList.size() && taken < cap; i++){
-                    if(!covered[i] && reaches(bu, bv, drillList.get(i)[0], drillList.get(i)[1], s)){ covered[i] = true; taken++; left--; }
+                    if(!covered[i] && reaches(bu, bv, drillList.get(i)[0], drillList.get(i)[1], sz(drillList.get(i)))){ covered[i] = true; taken++; left--; }
                 }
                 snapshot("power nodes", false);
             }
@@ -1287,7 +1437,7 @@ public class DrillLayoutPlanner{
                 if(!covered[i]){
                     int[] d = drillList.remove(i);
                     removeDrill(d);
-                    fill(d[0], d[1], s, FREE);
+                    fill(d[0], d[1], sz(d), FREE);
                     drillsDroppedForPower++;
                     break;
                 }
@@ -1299,7 +1449,7 @@ public class DrillLayoutPlanner{
     }
 
     void removeDrill(int[] d){
-        for(Feeder f : feeders) f.drills.removeIf(x -> x[0] == d[0] && x[1] == d[1]);
+        for(Feeder f : feeders) f.drills.removeIf(x -> x == d);
     }
 
     int[][] copy(int[][] a){
@@ -1327,7 +1477,7 @@ public class DrillLayoutPlanner{
             for(int[] row : drillAt) Arrays.fill(row, -1);
             for(int i = 0; i < drillList.size(); i++){
                 int[] d = drillList.get(i);
-                for(int x = d[0]; x < d[0] + s; x++) for(int y = d[1]; y < d[1] + s; y++) drillAt[x][y] = i;
+                for(int x = d[0]; x < d[0] + sz(d); x++) for(int y = d[1]; y < d[1] + sz(d); y++) drillAt[x][y] = i;
             }
 
             int[] prev = new int[W * H], cost = new int[W * H];
@@ -1369,7 +1519,7 @@ public class DrillLayoutPlanner{
             for(int i : remove){
                 int[] d = drillList.remove(i);
                 removeDrill(d);
-                fill(d[0], d[1], s, FREE);
+                fill(d[0], d[1], sz(d), FREE);
                 drillsDroppedForPower++;
             }
             for(int[] r : relays){ occ[r[0]][r[1]] = ONODE; nodes.add(r); }

@@ -30,7 +30,7 @@ public class ServerTest{
     static float predicted;
 
     static void register(CommandHandler handler){
-        handler.register("abtest", "<item> <drill> <dir> <mode> [options...]", "AutoBuild: plan and place a drill field. dir may be auto. options: size=N belt=NAME nobridge water=SIDE[:FRAC]|auto conduit=NAME", args -> {
+        handler.register("abtest", "<item> <drill> <dir> <mode> [options...]", "AutoBuild: plan and place a drill field. dir may be auto. options: size=N belt=NAME nobridge nomix water=SIDE[:FRAC]|auto conduit=NAME", args -> {
             if(!state.isGame()){ Log.err("host a map first"); return; }
             Item item = content.item(args[0]);
             Block drill = content.block(args[1]);
@@ -38,7 +38,7 @@ public class ServerTest{
             int dir = autoOut ? -1 : "ENWS".indexOf(Character.toUpperCase(args[2].charAt(0)));
             int size = 30;
             Block belt = Blocks.conveyor, conduit = Blocks.conduit;
-            boolean bridges = true;
+            boolean bridges = true, mix = true;
             int waterDir = -1;
             boolean water = false;
             float waterFrac = 0.5f;
@@ -52,6 +52,7 @@ public class ServerTest{
                     case "belt": belt = content.block(kv[1]); break;
                     case "conduit": conduit = content.block(kv[1]); break;
                     case "nobridge": bridges = false; break;
+                    case "nomix": mix = false; break;
                     case "water":
                         water = true;
                         if(kv[1].equalsIgnoreCase("auto")) break;
@@ -68,6 +69,7 @@ public class ServerTest{
             job.drill = (Drill)drill; job.target = item; job.outPick = dir; job.outFrac = 0.5f; job.belt = belt;
             job.mode = args[3].startsWith("e") ? Mode.EFFICIENCY : Mode.OUTPUT;
             job.bridges = bridges;
+            job.mixDrills = mix;
             job.water = water; job.waterPick = waterDir; job.waterFrac = waterFrac; job.conduit = conduit;
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
@@ -91,10 +93,10 @@ public class ServerTest{
                 // same region without bridges or water, same output side (ore is randomized per server start)
                 DrillFieldJob alt = new DrillFieldJob();
                 alt.drill = job.drill; alt.target = job.target; alt.outPick = cand.outDir; alt.belt = job.belt; alt.mode = job.mode;
-                alt.ax = job.ax; alt.ay = job.ay; alt.bx = job.bx; alt.by = job.by; alt.bridges = false;
+                alt.ax = job.ax; alt.ay = job.ay; alt.bx = job.bx; alt.by = job.by; alt.bridges = false; alt.mixDrills = false;
                 DrillFieldJob.Snapshot asn = alt.prepare();
                 DrillFieldJob.Candidate a = asn == null ? null : alt.search(asn, 0, 1, null);
-                if(a != null && a.ok()) Log.info("[abtest] baseline (no bridges, no water): @", Strings.stripColors(a.summary()).replace('\n', ' '));
+                if(a != null && a.ok()) Log.info("[abtest] baseline (chosen drill only, no bridges, no water): @", Strings.stripColors(a.summary()).replace('\n', ' '));
             }
 
             boolean first = true;

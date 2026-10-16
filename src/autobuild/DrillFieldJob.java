@@ -46,6 +46,8 @@ public class DrillFieldJob{
     /** water boost: water rows fed from a water port */
     public boolean water;
     public Block conduit = Blocks.conduit;
+    /** also use smaller, lower-tier drills where the chosen one doesn't fit */
+    public boolean mixDrills = true;
     /** ports picked by the player: region side (0=E 1=N 2=W 3=S) or -1 = let the planner choose; position along the side in world order */
     public int outPick = -1, waterPick = -1;
     public float outFrac = 0.5f, waterFrac = 0.5f;
@@ -169,9 +171,12 @@ public class DrillFieldJob{
     public static class Snapshot{
         int rw, rh, s;
         boolean[][] belt, node;
-        /** drill placeable with its footprint's min corner at (rx, ry) */
-        boolean[][] drillMin;
-        int[][] drop;
+        /** drill types: 0 = the chosen drill, then smaller fillers (one per size) */
+        Drill[] types;
+        double[] rate;
+        /** per type: placeable with its footprint's min corner at (rx, ry); mineable item per tile */
+        boolean[][][] drillMin;
+        int[][][] drop;
         boolean[] low;
         PowerNode node0;
         ItemBridge bridge;
@@ -186,9 +191,13 @@ public class DrillFieldJob{
         cancelled = false;
         Snapshot sn = new Snapshot();
         sn.rw = bx - ax + 1; sn.rh = by - ay + 1; sn.s = drill.size;
-        sn.power = needsPower(drill);
+        sn.types = drillTypes();
+        sn.power = false;
+        for(Drill d : sn.types) sn.power |= needsPower(d);
         sn.node0 = sn.power ? powerNode() : null;
         if(sn.power && sn.node0 == null){ error = drill.localizedName + " needs power, but power nodes aren't available here"; return null; }
+        sn.rate = new double[sn.types.length];
+        for(int i = 0; i < sn.types.length; i++) sn.rate[i] = drill.getDrillTime(target) / sn.types[i].getDrillTime(target);
         sn.bridge = bridges && available(Blocks.itemBridge) ? (ItemBridge)Blocks.itemBridge : null;
         ConsumeLiquid boost = waterBoost(drill);
         if(water && (boost == null || !waterAvailable(conduit))){
@@ -202,19 +211,43 @@ public class DrillFieldJob{
             sn.waterRate = boost.amount * 60f;
             sn.liquidRange = available(Blocks.bridgeConduit) ? ((ItemBridge)Blocks.bridgeConduit).range : 0;
         }
-        sn.belt = new boolean[sn.rw][sn.rh]; sn.node = new boolean[sn.rw][sn.rh]; sn.drillMin = new boolean[sn.rw][sn.rh]; sn.drop = new int[sn.rw][sn.rh];
+        int T = sn.types.length;
+        sn.belt = new boolean[sn.rw][sn.rh]; sn.node = new boolean[sn.rw][sn.rh]; sn.drillMin = new boolean[T][sn.rw][sn.rh]; sn.drop = new int[T][sn.rw][sn.rh];
         sn.low = new boolean[content.items().size];
         for(Item i : content.items()) sn.low[i.id] = i.lowPriority;
-        int s = sn.s, off = (s - 1) / 2;
         for(int rx = 0; rx < sn.rw; rx++) for(int ry = 0; ry < sn.rh; ry++){
             int x = ax + rx, y = ay + ry;
             sn.belt[rx][ry] = Build.validPlace(belt, team, x, y, 0) && (sn.bridge == null || Build.validPlace(sn.bridge, team, x, y, 0));
             sn.node[rx][ry] = sn.node0 != null && Build.validPlace(sn.node0, team, x, y, 0);
             Tile t = world.tile(x, y);
-            sn.drop[rx][ry] = drill.canMine(t) ? drill.getDrop(t).id : -1;
-            sn.drillMin[rx][ry] = rx + s <= sn.rw && ry + s <= sn.rh && Build.validPlace(drill, team, x + off, y + off, 0);
+            for(int i = 0; i < T; i++){
+                Drill d = sn.types[i];
+                int s = d.size, off = (s - 1) / 2;
+                sn.drop[i][rx][ry] = d.canMine(t) ? d.getDrop(t).id : -1;
+                sn.drillMin[i][rx][ry] = rx + s <= sn.rw && ry + s <= sn.rh && Build.validPlace(d, team, x + off, y + off, 0);
+            }
         }
         return sn;
+    }
+
+    /**
+     * The chosen drill, plus (if mixing) for every smaller size the fastest available drill of a
+     * tier no higher than the chosen one that can mine the target and needs no liquid.
+     */
+    public Drill[] drillTypes(){
+        Seq<Drill> out = Seq.with(drill);
+        if(!mixDrills) return out.toArray(Drill.class);
+        IntMap<Drill> best = new IntMap<>();
+        for(Block b : content.blocks()){
+            if(!(b instanceof Drill d) || d == drill || !available(d)) continue;
+            if(d.size >= drill.size || d.tier > drill.tier || d.tier < target.hardness || needsLiquid(d)) continue;
+            if(needsPower(d) && powerNode() == null) continue;
+            Drill cur = best.get(d.size);
+            if(cur == null || d.getDrillTime(target) < cur.getDrillTime(target)) best.put(d.size, d);
+        }
+        for(Drill d : best.values()) out.add(d);
+        out.sort(d -> -d.size);
+        return out.toArray(Drill.class);
     }
 
     // ------------------------------------------------------------------ planning
@@ -236,6 +269,9 @@ public class DrillFieldJob{
         public int portX, portY, waterPortX = -1, waterPortY = -1;
         public PowerNode node;
         public ItemBridge bridge;
+        public Drill[] types;
+        /** drills placed per type */
+        public int[] perType;
         public String error;
         /** for "another plan": same placements = same plan */
         public final Set<String> signature = new HashSet<>();
@@ -260,7 +296,11 @@ public class DrillFieldJob{
                     Block b = pl.kind == DrillLayoutPlanner.BRIDGE ? bridge : Blocks.bridgeConduit;
                     return new BuildPlan(x, y, 0, b, new Point2(f.wx(pl.lu, pl.lv) - x, f.wy(pl.lu, pl.lv) - y));
                 }
-                default: return new BuildPlan(f.minX(pl.u, pl.v, s) + (s - 1) / 2, f.minY(pl.u, pl.v, s) + (s - 1) / 2, 0, drill);
+                default: {
+                    Drill d = types[pl.type];
+                    int ds = d.size;
+                    return new BuildPlan(f.minX(pl.u, pl.v, ds) + (ds - 1) / 2, f.minY(pl.u, pl.v, ds) + (ds - 1) / 2, 0, d);
+                }
             }
         }
 
@@ -279,13 +319,19 @@ public class DrillFieldJob{
         public String summary(){
             if(!ok()) return "[scarlet]" + error;
             StringBuilder sb = new StringBuilder();
-            sb.append(Strings.format("@ drills on @ @ ore tiles, ~@/s", planner.drills, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
+            StringBuilder kinds = new StringBuilder();
+            for(int i = 0; i < types.length; i++){
+                if(perType[i] == 0) continue;
+                if(kinds.length() > 0) kinds.append(" + ");
+                kinds.append(perType[i]).append(' ').append(types[i].localizedName);
+            }
+            sb.append(Strings.format("@ on @ @ ore tiles, ~@/s", kinds, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
             sb.append(Strings.format(" [lightgray](@)[]", planner.layout));
             if(waterDir >= 0 && planner.waterSkipped){
                 sb.append("\n[orange]Water skipped: the water network couldn't reach enough drills to beat a layout without water");
             }else if(waterDir >= 0){
                 sb.append(Strings.format("\n[sky]@/@ drills water-boosted, needs ~@ water/s at the water port", planner.wetDrills, planner.drills,
-                    Strings.autoFixed(planner.wetDrills * waterPerSecond, 1)));
+                    Strings.autoFixed(waterPerSecond, 1)));
             }
             if(planner.nodes > 0) sb.append(Strings.format("\n@ power nodes, needs @ power/s", planner.nodes, Strings.autoFixed(powerPerSecond, 1)));
             if(itemsPerSecond > beltCapacity) sb.append(Strings.format("\n[orange]Exceeds @ capacity (~@/s): output will back up", belt.localizedName, Strings.autoFixed(beltCapacity, 1)));
@@ -301,7 +347,7 @@ public class DrillFieldJob{
     public Candidate plan(Snapshot sn, int outDir, float outFrac, int waterDir, float waterFrac, int variant, Progress progress){
         Candidate c = new Candidate();
         c.outDir = outDir; c.outFrac = outFrac; c.waterDir = waterDir; c.waterFrac = waterFrac; c.variant = variant;
-        c.node = sn.node0; c.bridge = sn.bridge;
+        c.node = sn.node0; c.bridge = sn.bridge; c.types = sn.types; c.perType = new int[sn.types.length];
         Frame f = c.frame = new Frame(ax, ay, bx, by, outDir);
         int W = f.W, H = f.H, s = sn.s;
 
@@ -311,16 +357,25 @@ public class DrillFieldJob{
         if(sn.bridge != null) p.bridgeRange = sn.bridge.range;
         if(sn.node0 != null){ p.nodeRange = sn.node0.laserRange; p.nodeMaxLinks = sn.node0.maxNodes; }
         p.lowPriority = sn.low;
-        p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H]; p.drillOk = new boolean[W][H]; p.drop = new int[W][H];
+        int T = sn.types.length;
+        p.typeSize = new int[T]; p.typeRate = sn.rate; p.typePowered = new boolean[T];
+        p.typeDrop = new int[T][W][H]; p.typeDrillOk = new boolean[T][W][H];
+        p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H];
         for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
             int rx = f.wx(u, v) - ax, ry = f.wy(u, v) - ay;
             p.beltOk[u][v] = sn.belt[rx][ry];
             p.nodeOk[u][v] = sn.node[rx][ry];
-            p.drop[u][v] = sn.drop[rx][ry];
+            for(int i = 0; i < T; i++) p.typeDrop[i][u][v] = sn.drop[i][rx][ry];
         }
-        for(int u = 0; u + s <= W; u++) for(int v = 0; v + s <= H; v++){
-            p.drillOk[u][v] = sn.drillMin[f.minX(u, v, s) - ax][f.minY(u, v, s) - ay];
+        for(int i = 0; i < T; i++){
+            int ds = sn.types[i].size;
+            p.typeSize[i] = ds;
+            p.typePowered[i] = needsPower(sn.types[i]);
+            for(int u = 0; u + ds <= W; u++) for(int v = 0; v + ds <= H; v++){
+                p.typeDrillOk[i][u][v] = sn.drillMin[i][f.minX(u, v, ds) - ax][f.minY(u, v, ds) - ay];
+            }
         }
+        p.drop = p.typeDrop[0]; p.drillOk = p.typeDrillOk[0];
         // port position: fraction in world order -> local v (the local v axis runs backwards for N and W)
         float lf = outDir == 1 || outDir == 2 ? 1f - outFrac : outFrac;
         p.portV = Mathf.round(lf * (H - 1));
@@ -331,7 +386,6 @@ public class DrillFieldJob{
             int[] wt = edgeTile(waterDir, waterFrac);
             p.waterPos = p.waterSide == 2 ? f.lv(wt[0], wt[1]) : f.lu(wt[0], wt[1]);
             p.liquidBridgeRange = sn.liquidRange;
-            c.waterPerSecond = sn.waterRate;
         }
 
         DrillLayoutPlanner planner = c.planner = current = new DrillLayoutPlanner(p);
@@ -348,21 +402,29 @@ public class DrillFieldJob{
             Time.timeSinceMillis(time), ok ? "" : planner.failure);
         if(!ok){ c.error = planner.failure; return c; }
 
-        float perOre = 60f / drill.getDrillTime(target);
+        c.waterPerSecond = 0f;
         Seq<BuildPlan> nodes = new Seq<>(), logistics = new Seq<>(), drills = new Seq<>();
         for(Place pl : planner.places){
             BuildPlan bp = c.toPlan(pl);
             c.signature.add(pl.toString());
             switch(pl.kind){
                 case DrillLayoutPlanner.NODE: nodes.add(bp); break;
-                case DrillLayoutPlanner.DRILL: drills.add(bp); c.itemsPerSecond += perOre * pl.ore * (pl.dir == 1 ? sn.boost : 1f); break;
+                case DrillLayoutPlanner.DRILL: {
+                    Drill d = sn.types[pl.type];
+                    drills.add(bp);
+                    c.perType[pl.type]++;
+                    c.itemsPerSecond += 60f / d.getDrillTime(target) * pl.ore * (pl.dir == 1 ? d.liquidBoostIntensity * d.liquidBoostIntensity : 1f);
+                    if(needsPower(d)) c.powerPerSecond += d.consPower.usage * 60f;
+                    ConsumeLiquid wb = waterBoost(d);
+                    if(pl.dir == 1 && wb != null) c.waterPerSecond += wb.amount * 60f;
+                    break;
+                }
                 default: logistics.add(bp);
             }
         }
         // nodes first (they link to each other as they're built, drills link to them when finished), then logistics, then drills
         c.plans.addAll(nodes).addAll(logistics).addAll(drills);
         c.beltCapacity = belt instanceof Conveyor cv ? cv.displayedSpeed : Float.MAX_VALUE;
-        c.powerPerSecond = sn.power ? drill.consPower.usage * 60f * planner.drills : 0f;
         c.portX = f.wx(W - 1, planner.port);
         c.portY = f.wy(W - 1, planner.port);
         if(waterDir >= 0 && planner.waterU >= 0 && !planner.waterSkipped){

@@ -7,6 +7,24 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-17
+### Added
+- **Mixed drill tiers** ("Fill gaps with smaller drills", on by default): for every smaller size,
+  the fastest drill with a tier no higher than the chosen one is used where the chosen drill doesn't
+  fit (e.g. airblast + laser + pneumatic). Drills are valued by their own speed; power and water are
+  planned per type. +1.0% (3x3) / +2.2% (4x4) output on average over 120 random fields.
+- Routes can merge into routed item bridges: from the side (not the link side) or by linking a new
+  bridge straight into an existing one.
+- Water connections can branch off the middle of a conduit (it becomes a liquid router).
+- Server test option `nomix`; `MEASURE=<seconds>` for longer measurement windows.
+
+### Changed
+- **Fewer logistics tiles**: routing costs count occupied tiles, so a bridge jump of any length costs
+  about one tile plus a material premium; end bridges pay for the buffer tiles they reserve.
+  Lanes and water rows are split where drills are far apart and each part is connected separately
+  (bridges across the gap). Screenshot case (two far ore clusters + water): 8.11 -> 3.86 logistics
+  tiles per drill.
+
 ## [0.6.0] - 2026-10-16
 ### Added
 - **Click to place ports**: after the settings dialog, click any tile in the region for the item
@@ -105,6 +123,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.7.0]: #
 [0.6.0]: #
 [0.5.1]: #
 [0.5.0]: #

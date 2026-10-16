@@ -21,6 +21,8 @@ public class PlannerTest{
             + variantsBetter + " alternatives scored >5% above the default plan");
         fails += oreRule();
         fails += waterAroundWall();
+        mixGain();
+        logisticsEfficiency();
         compare();
         System.out.println(fails == 0 ? "ALL OK" : fails + " FAILED");
         if(fails > 0) System.exit(1);
@@ -70,6 +72,22 @@ public class PlannerTest{
         return pa;
     }
 
+    /** power only for type 0 when power is on (like laser/airblast with pneumatic fillers) */
+    static boolean typePower0;
+    static boolean poweredType(int type){ return type == 0 ? typePower0 : false; }
+
+    /** main drill of size s plus every smaller size >= 2 as a slower, unpowered filler */
+    static void addTypes(Params pa, Map m, int s, boolean power){
+        int n = s - 1;
+        pa.typeSize = new int[n]; pa.typeRate = new double[n]; pa.typePowered = new boolean[n];
+        pa.typeDrop = new int[n][][]; pa.typeDrillOk = new boolean[n][][];
+        for(int i = 0; i < n; i++){
+            int st = s - i;
+            pa.typeSize[i] = st; pa.typeRate[i] = i == 0 ? 1 : 0.7 - 0.1 * i; pa.typePowered[i] = i == 0 && power;
+            pa.typeDrop[i] = m.drop; pa.typeDrillOk[i] = drillOk(m, st);
+        }
+    }
+
     static Params params(Map m, int s, Mode mode, boolean power, boolean bridges){
         Params pa = new Params();
         pa.W = m.W; pa.H = m.H; pa.drillSize = s; pa.beltOk = m.belt; pa.nodeOk = m.belt; pa.drillOk = m.drill; pa.drop = m.drop;
@@ -83,9 +101,13 @@ public class PlannerTest{
         Mode mode = seed % 2 == 0 ? Mode.OUTPUT : Mode.EFFICIENCY;
         boolean power = s > 2 || seed % 5 == 0;
         boolean bridges = seed % 4 != 3;
+        boolean mixed = s > 2 && seed % 2 == 1;
         int waterSide = seed % 3 == 0 ? 1 + (int)(seed / 3 % 3) : 0;
         int waterPos = (int)(seed * 7 % Math.max(1, Math.min(m.W, m.H)));
-        DrillLayoutPlanner p = new DrillLayoutPlanner(params(m, s, mode, power, bridges, waterSide, waterPos));
+        Params pp = params(m, s, mode, power, bridges, waterSide, waterPos);
+        if(mixed) addTypes(pp, m, s, power);
+        typePower0 = power;
+        DrillLayoutPlanner p = new DrillLayoutPlanner(pp);
         int[] snapshots = {0};
         p.listener = (stage, snap) -> snapshots[0]++;
         p.snapshotInterval = 0;
@@ -101,6 +123,7 @@ public class PlannerTest{
             boolean anyDifferent = false;
             for(int variant = 1; variant <= 3; variant++){
                 Params pv = params(m, s, mode, power, bridges, waterSide, waterPos);
+                if(mixed) addTypes(pv, m, s, power);
                 pv.variant = variant;
                 DrillLayoutPlanner q = new DrillLayoutPlanner(pv);
                 if(!q.plan()) continue;
@@ -116,7 +139,7 @@ public class PlannerTest{
         }
         if(ok && snapshots[0] == 0) errs += "no progress snapshots ";
         if(print || !errs.isEmpty()){
-            System.out.println("seed " + seed + " " + m.W + "x" + m.H + " s=" + s + " " + mode + " power=" + power + " bridges=" + bridges + " water=" + waterSide + " wet=" + p.wetDrills
+            System.out.println("seed " + seed + " " + m.W + "x" + m.H + " s=" + s + (mixed ? "+mixed" : "") + " " + mode + " power=" + power + " bridges=" + bridges + " water=" + waterSide + " wet=" + p.wetDrills
                 + " ok=" + ok + (ok ? "" : " " + p.failure) + " layout=" + p.layout + " drills=" + p.drills + " ore=" + p.oreTiles
                 + " belts=" + p.belts + " bridges=" + p.bridges + " nodes=" + p.nodes + " routed=" + p.segmentsRouted
                 + " dropped=" + p.segmentsDropped + " " + ms + "ms");
@@ -135,7 +158,7 @@ public class PlannerTest{
         char[][] g = new char[m.W][m.H];
         for(int x = 0; x < m.W; x++) for(int y = 0; y < m.H; y++) g[x][y] = !m.belt[x][y] ? '#' : m.drop[x][y] == 1 ? '.' : m.drop[x][y] == 2 ? ',' : ' ';
         for(Place pl : p.places){
-            if(pl.kind == DrillLayoutPlanner.DRILL){ for(int i = 0; i < s; i++) for(int j = 0; j < s; j++) g[pl.u+i][pl.v+j] = pl.dir == 1 ? 'W' : 'D'; }
+            if(pl.kind == DrillLayoutPlanner.DRILL){ for(int i = 0; i < pl.size; i++) for(int j = 0; j < pl.size; j++) g[pl.u+i][pl.v+j] = pl.dir == 1 ? 'W' : pl.type == 0 ? 'D' : (char)('a' + pl.type - 1); }
             else if(pl.kind == DrillLayoutPlanner.CONDUIT) g[pl.u][pl.v] = "-|-|".charAt(pl.dir);
             else if(pl.kind == DrillLayoutPlanner.LROUTER) g[pl.u][pl.v] = 'O';
             else if(pl.kind == DrillLayoutPlanner.LBRIDGE) g[pl.u][pl.v] = pl.lu == pl.u && pl.lv == pl.v ? 'e' : '=';
@@ -165,7 +188,7 @@ public class PlannerTest{
             for(Place pl : p.places){
                 int id = ents.size();
                 ents.add(pl);
-                int size = pl.kind == DrillLayoutPlanner.DRILL ? s : 1;
+                int size = pl.kind == DrillLayoutPlanner.DRILL ? pl.size : 1;
                 for(int i = 0; i < size; i++) for(int j = 0; j < size; j++){
                     int x = pl.u + i, y = pl.v + j;
                     if(x >= W || y >= H){ err.append("outside@").append(pl).append(' '); continue; }
@@ -187,8 +210,9 @@ public class PlannerTest{
                 Place pl = ents.get(id);
                 switch(pl.kind){
                     case DrillLayoutPlanner.DRILL:
-                        for(int i = 0; i < s; i++){
-                            int[][] adj = {{pl.u + s, pl.v + i, 2}, {pl.u - 1, pl.v + i, 0}, {pl.u + i, pl.v + s, 3}, {pl.u + i, pl.v - 1, 1}};
+                        for(int i = 0; i < pl.size; i++){
+                            int ds = pl.size;
+                            int[][] adj = {{pl.u + ds, pl.v + i, 2}, {pl.u - 1, pl.v + i, 0}, {pl.u + i, pl.v + ds, 3}, {pl.u + i, pl.v - 1, 1}};
                             // {x, y, face of the target that looks at the drill}
                             for(int[] a : adj) addIfAccepts(m, ent, ents, out, id, a[0], a[1], a[2], s);
                         }
@@ -244,8 +268,8 @@ public class PlannerTest{
             if(power){
                 for(Place d : p.places) if(d.kind == DrillLayoutPlanner.DRILL){
                     boolean pow = false;
-                    for(Place nd : p.places) if(nd.kind == DrillLayoutPlanner.NODE && reach(nd.u, nd.v, d.u, d.v, s)) pow = true;
-                    if(!pow) err.append("unpowered@").append(d).append(' ');
+                    for(Place nd : p.places) if(nd.kind == DrillLayoutPlanner.NODE && reach(nd.u, nd.v, d.u, d.v, d.size)) pow = true;
+                    if(!pow && poweredType(d.type)) err.append("unpowered@").append(d).append(' ');
                 }
                 if(p.drills > 0 && p.powerGroups > 1) err.append("powerGroups=").append(p.powerGroups).append(' ');
             }
@@ -400,18 +424,21 @@ public class PlannerTest{
         for(int s = 2; s <= 4; s++){
             m.drill = drillOk(m, s);
             for(Mode mode : Mode.values()){
-                for(int variant = 0; variant < 3; variant++){
+                for(int variant = 0; variant < (s > 2 ? 4 : 3); variant++){
                     boolean br = variant > 0;
-                    DrillLayoutPlanner p = new DrillLayoutPlanner(params(m, s, mode, s > 2, br, variant == 2 ? 2 : 0, H / 2));
+                    Params pa = params(m, s, mode, s > 2, br, variant == 2 ? 2 : 0, H / 2);
+                    if(variant == 3) addTypes(pa, m, s, true);
+                    typePower0 = s > 2;
+                    DrillLayoutPlanner p = new DrillLayoutPlanner(pa);
                     long t = System.nanoTime();
                     p.plan();
                     String errs = FlowCheck.check(m, s, p, s > 2);
                     double eff = 0;
                     for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.DRILL) eff += pl.ore * (pl.dir == 1 ? 2.56 : 1);
                     System.out.printf("compare s=%d %-10s %-12s ore %3d/%d (%2.0f%%) output=%5.0f drills=%3d wet=%3d belts=%3d bridges=%3d water=%3d nodes=%2d %-24s %4dms %s%n",
-                        s, mode, variant == 0 ? "belts" : variant == 1 ? "+bridges" : "+water", p.oreTiles, total, 100.0 * p.oreTiles / total, eff,
+                        s, mode, variant == 0 ? "belts" : variant == 1 ? "+bridges" : variant == 2 ? "+water" : "+bridges+mix", p.oreTiles, total, 100.0 * p.oreTiles / total, eff,
                         p.drills, p.wetDrills, p.belts, p.bridges, p.waterTiles, p.nodes, p.layout, (System.nanoTime() - t) / 1_000_000, errs.isEmpty() ? "" : "ERR " + errs);
-                    if(s == 2 && mode == Mode.OUTPUT && variant == Integer.getInteger("showcompare", -1)) print(m, s, p);
+                    if(s == 2 && mode == Mode.OUTPUT && variant == Integer.getInteger("showcompare", -1)){ System.out.println("routed=" + p.segmentsRouted + " dropped=" + p.segmentsDropped); print(m, s, p); }
                 }
             }
         }
@@ -441,5 +468,73 @@ public class PlannerTest{
         System.out.println("water around wall: wet=" + p.wetDrills + "/" + p.drills + ", beyond wall " + farWet + "/" + far + (ok ? " ok" : " FAIL " + errs));
         if(!ok || System.getProperty("showwall") != null) print(m, 2, p);
         return ok ? 0 : 1;
+    }
+
+    /**
+     * Screenshot case (v0.6.0 feedback): a long region with ore clusters at both ends. Reports how
+     * many tiles the logistics (belts, bridges, water) occupy per drill.
+     */
+    static void logisticsEfficiency(){
+        String[] names = {"far clusters", "far clusters + water", "irregular field", "irregular field + water"};
+        for(int c = 0; c < 4; c++){
+            Map m = new Map();
+            int W, H;
+            Random r = new Random(7);
+            if(c < 2){
+                W = m.W = 60; H = m.H = 14;
+                m.belt = new boolean[W][H]; m.drop = new int[W][H];
+                for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
+                    m.belt[x][y] = true;
+                    boolean ore = ((x >= 2 && x <= 9) || (x >= 44 && x <= 52)) && y >= 2 && y <= 11 && r.nextFloat() < 0.8f;
+                    m.drop[x][y] = ore ? 1 : -1;
+                }
+            }else{
+                W = m.W = 40; H = m.H = 30;
+                m.belt = new boolean[W][H]; m.drop = new int[W][H];
+                for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
+                    m.belt[x][y] = true;
+                    double d = Math.hypot((x - 18) / 1.6, y - 15) + 3 * Math.sin(x * 0.7) + 2 * Math.cos(y * 0.9);
+                    m.drop[x][y] = d < 11 && r.nextFloat() < 0.9 ? 1 : -1;
+                }
+            }
+            m.drill = drillOk(m, 2);
+            DrillLayoutPlanner p = new DrillLayoutPlanner(params(m, 2, Mode.OUTPUT, false, true, c % 2 == 1 ? 2 : 0, H / 2));
+            p.plan();
+            String errs = FlowCheck.check(m, 2, p, false);
+            double eff = 0;
+            for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.DRILL) eff += pl.ore * (pl.dir == 1 ? 2.56 : 1);
+            int logistic = p.belts + p.bridges + p.waterTiles;
+            System.out.printf("logistics %-24s drills=%3d wet=%3d output=%5.0f belts=%3d bridges=%3d water=%3d -> %.2f tiles/drill, %.2f tiles per output %s%n",
+                names[c], p.drills, p.wetDrills, eff, p.belts, p.bridges, p.waterTiles, (double)logistic / Math.max(1, p.drills), logistic / Math.max(1, eff),
+                errs.isEmpty() ? "" : "ERR " + errs);
+            if(System.getProperty("showlog") != null && Integer.getInteger("showlog") == c) print(m, 2, p);
+        }
+    }
+
+    /** Output with smaller filler drills vs the chosen drill alone, over the random maps. */
+    static void mixGain(){
+        for(int s = 3; s <= 4; s++){
+            double base = 0, mixed = 0;
+            int better = 0, worse = 0, n = 0;
+            for(int seed = 0; seed < 120; seed++){
+                Map m = randomMap(seed, s);
+                Params a = params(m, s, Mode.OUTPUT, false, true);
+                Params b = params(m, s, Mode.OUTPUT, false, true);
+                addTypes(b, m, s, false);
+                DrillLayoutPlanner pa = new DrillLayoutPlanner(a), pb = new DrillLayoutPlanner(b);
+                if(!pa.plan() || !pb.plan()) continue;
+                double oa = output(pa, b.typeRate), ob = output(pb, b.typeRate);
+                base += oa; mixed += ob; n++;
+                if(ob > oa * 1.01) better++;
+                if(ob < oa * 0.99) worse++;
+            }
+            System.out.printf("mix s=%d: output %+.1f%% over %d maps (better on %d, worse on %d)%n", s, 100 * (mixed / base - 1), n, better, worse);
+        }
+    }
+
+    static double output(DrillLayoutPlanner p, double[] rate){
+        double o = 0;
+        for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.DRILL) o += pl.ore * rate[pl.type];
+        return o;
     }
 }
