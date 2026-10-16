@@ -2,7 +2,7 @@ displayName: "AutoBuild"
 name: "autobuild"
 author: "Maiolao"
 main: "autobuild.AutoBuildMod"
-description: "Select a region and auto-build a drill field: ore-aware layout, A* belt routing, power nodes, configurable output port."
-version: "0.5.1"
+description: "Select a region and auto-build a drill field: click (or auto-pick) the item output and water input, preview the plan, try alternatives, then build."
+version: "0.6.0"
 minGameVersion: 160
 java: true

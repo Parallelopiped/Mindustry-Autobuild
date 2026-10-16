@@ -69,6 +69,11 @@ public class DrillLayoutPlanner{
         /** water port edge in the local frame: 1 = top (v=H-1), 2 = west (u=0), 3 = bottom (v=0); position along it */
         public int waterSide = 2, waterPos;
         public int liquidBridgeRange = 4;
+        /**
+         * 0 = best plan. Higher values explore alternatives: drill values get deterministic noise,
+         * routing order and turn penalty change, the lattice search uses another seed.
+         */
+        public int variant;
     }
 
     /** Receives snapshots of the plan while it is being computed (called on the planning thread). */
@@ -92,6 +97,8 @@ public class DrillLayoutPlanner{
     public final List<Place> places = new ArrayList<>();
     public int drills, wetDrills, waterTiles, oreTiles, nodes, belts, bridges, segmentsRouted, segmentsDropped, drillsDroppedForPower, powerGroups, port = -1;
     public String layout = "", failure;
+    /** objective of the final plan without variant noise (higher is better); comparable across ports/variants */
+    public double score;
     /** water was requested but a dry layout scored better (e.g. the water network couldn't reach the rows) */
     public boolean waterSkipped;
 
@@ -101,6 +108,9 @@ public class DrillLayoutPlanner{
     int[][] ore;
     final Random rand;
     long lastSnapshot;
+    final float turnCost;
+    /** variant noise is applied while choosing the layout, not when scoring */
+    boolean noise;
     List<Feeder> feeders = new ArrayList<>();
     List<int[]> nodeList = new ArrayList<>();
     /** tiles reserved for the water spine / feed row (not usable by the layout) */
@@ -113,7 +123,8 @@ public class DrillLayoutPlanner{
 
     public DrillLayoutPlanner(Params p){
         this.p = p; this.W = p.W; this.H = p.H; this.s = p.drillSize;
-        this.rand = new Random(p.seed);
+        this.rand = new Random(p.seed * 31 + p.variant * 7919L);
+        this.turnCost = p.variant == 0 ? 0.4f : 0.15f + rand.nextFloat() * 0.8f;
     }
 
     /** Something that must be routed to the port: a lane segment or a bridge chain. */
@@ -145,6 +156,7 @@ public class DrillLayoutPlanner{
         if(p.water && !setupWater()){ failure = "no buildable tile for the water port"; return false; }
         computeOre();
         occ = new int[W][H];
+        noise = true;
 
         // dry layout: belt lanes, or a bridge lattice if better
         double dryValue = chooseLanes();
@@ -186,13 +198,16 @@ public class DrillLayoutPlanner{
             return false;
         }
 
+        noise = false;
         for(int[] row : occ) Arrays.fill(row, FREE);
         for(Feeder f : feeders) mark(f, true);
         for(int[] el : water) occ[el[0]][el[1]] = OWATER;
         snapshot("layout: " + layout, true);
 
         // route, closest to the port first
-        feeders.sort(Comparator.comparingInt(f -> Math.abs(f.sv - port) + (W - 1 - f.su)));
+        Map<Feeder, Double> order = new HashMap<>();
+        for(Feeder f : feeders) order.put(f, Math.abs(f.sv - port) + (W - 1 - f.su) + (p.variant == 0 ? 0 : rand.nextDouble() * 12));
+        feeders.sort(Comparator.comparingDouble(order::get));
         boolean portUsed = false;
         List<Feeder> routed = new ArrayList<>(), pending = new ArrayList<>(feeders);
         for(Feeder f : pending){
@@ -230,6 +245,9 @@ public class DrillLayoutPlanner{
                 default: bridges++;
             }
         }
+        score = 0;
+        for(Feeder f : feeders) for(int[] d : f.drills) score += drillValue(d[0], d[1], d.length > 2 && d[2] == 1);
+        score -= beltCost() * belts + bridgeCost() * bridges + (p.mode == Mode.OUTPUT ? 0.02 : 0.3) * waterTiles + (p.mode == Mode.OUTPUT ? 0.05 : 1.0) * nodes;
         snapshot("done", true);
         return true;
     }
@@ -322,7 +340,16 @@ public class DrillLayoutPlanner{
         int o = ore[u][v];
         if(o == 0 || masked(u, v, s)) return 0;
         // efficiency: a drill must sit mostly on ore to be worth its cost
-        return p.mode == Mode.OUTPUT ? o - 0.01 : o - 0.5 * s * s;
+        double val = p.mode == Mode.OUTPUT ? o - 0.01 : o - 0.5 * s * s;
+        return val > 0 ? val * noiseAt(u, v) : val;
+    }
+
+    /** deterministic per-position multiplier in [0.7, 1.3] for variants, 1 otherwise */
+    double noiseAt(int u, int v){
+        if(!noise || p.variant == 0) return 1;
+        long h = (u * 73856093L) ^ (v * 19349663L) ^ (p.variant * 83492791L) ^ p.seed;
+        h ^= (h >>> 13); h *= 0x5bd1e995L; h ^= (h >>> 15);
+        return 0.7 + 0.6 * ((h & 0xffff) / 65535.0);
     }
 
     boolean masked(int u, int v, int size){
@@ -336,7 +363,7 @@ public class DrillLayoutPlanner{
         double base = drillValue(u, v);
         if(!wet || base <= 0) return base;
         int o = ore[u][v];
-        return p.mode == Mode.OUTPUT ? o * p.waterBoost - 0.01 : o * p.waterBoost - 0.5 * s * s - 0.5;
+        return (p.mode == Mode.OUTPUT ? o * p.waterBoost - 0.01 : o * p.waterBoost - 0.5 * s * s - 0.5) * noiseAt(u, v);
     }
 
     /** Water row tile can carry a conduit/router. */
@@ -1143,7 +1170,7 @@ public class DrillLayoutPlanner{
             if(toPort && isPort && L == 0) return path(prev, id, 0);
             for(int nd = 0; nd < 4; nd++){
                 if(nd == (d + 2) % 4) continue;
-                float turn = nd != d ? 0.4f : 0f;
+                float turn = nd != d ? turnCost : 0f;
                 // conveyor step (from a landed bridge this makes it an end bridge)
                 int nu = u + DU[nd], nv = v + DV[nd];
                 boolean endOk = L == 0 || (!bannedEnds.contains(t) && dumpSafe(u, v, nd, d));

@@ -27,16 +27,31 @@ public class ClientSelfTest{
     float timer;
     int planned;
 
-    final boolean water;
+    final boolean water, autoPorts;
+    boolean sawReplay, shotReplay;
+    float previewShotAt = -1f;
+    String shot;
+    DrillFieldJob.Candidate built;
 
-    /** spec: "&lt;map&gt;" or "&lt;map&gt;:water" */
+    /** spec: "&lt;map&gt;[:water][:auto]" */
     ClientSelfTest(AutoBuildMod mod, String spec){
         this.mod = mod;
         String[] parts = spec.split(":");
         this.mapName = parts[0];
-        this.water = parts.length > 1 && parts[1].equals("water");
+        this.water = spec.contains(":water");
+        this.autoPorts = spec.contains(":auto");
         Events.on(ClientLoadEvent.class, e -> Time.runTask(30f, this::start));
         Events.run(Trigger.update, this::update);
+        // screenshots for checking what the player actually sees
+        Events.run(Trigger.uiDrawEnd, () -> {
+            if(shot == null) return;
+            var pix = arc.util.ScreenUtils.getFrameBufferPixmap(0, 0, Core.graphics.getWidth(), Core.graphics.getHeight(), true);
+            var file = Core.settings.getDataDirectory().child("selftest-" + shot + ".png");
+            arc.graphics.PixmapIO.writePng(file, pix);
+            pix.dispose();
+            Log.info("[selftest] screenshot @", file.absolutePath());
+            shot = null;
+        });
     }
 
     void start(){
@@ -56,7 +71,7 @@ public class ClientSelfTest{
         timer += Time.delta / 60f;
         if(timer > 150f){ fail("timeout in phase " + phase); return; }
         switch(phase){
-            case 1: // wait for the world and player unit
+            case 1: // wait for the world and player unit, then go through the real UI flow
                 if(state.isGame() && player.unit() != null && !player.unit().dead && timer > 3f){
                     DrillFieldJob job = mod.job;
                     if(!ServerTest.densest(job, Items.copper, 24)){ fail("no copper"); return; }
@@ -64,55 +79,76 @@ public class ClientSelfTest{
                     job.target = Items.copper;
                     job.drill = (Drill)Blocks.mechanicalDrill;
                     job.belt = Blocks.titaniumConveyor;
-                    job.outDir = 0;
                     job.bridges = true;
                     job.mode = Mode.OUTPUT;
                     job.water = water;
-                    job.waterDir = 2;
-                    job.waterFrac = 0.5f;
-                    // pick a water side whose edge has buildable tiles (ore is randomized per load)
-                    for(int side : new int[]{2, 1, 3}){
-                        int ok = 0;
-                        for(int i = 0; i <= 20; i++){
-                            int[] e = job.edgeTile(side, i / 20f);
-                            if(mindustry.world.Build.validPlace(Blocks.conduit, job.team, e[0], e[1], 0)) ok++;
-                        }
-                        if(ok >= 5){ job.waterDir = side; break; }
-                    }
                     job.conduit = Blocks.conduit;
-                    Log.info("[selftest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
-                    mod.plan();
+                    Log.info("[selftest] region (@,@)-(@,@), output @, water @", job.ax, job.ay, job.bx, job.by, autoPorts ? "auto" : "East (clicked)", water ? "auto" : "off");
+                    mod.startPicking();
+                    // what a click on the east edge / a right-click do
+                    if(autoPorts) mod.pickPort(-1, 0f);
+                    else{
+                        float[] snap = job.snap(job.bx + 2, (job.ay + job.by) / 2);
+                        mod.pickPort((int)snap[0], snap[1]);
+                    }
+                    if(water) mod.pickPort(-1, 0f);
                     phase = 2;
                 }
                 break;
-            case 2: // planning on the worker thread: count distinct gray snapshots
-                Seq<BuildPlan> g = mod.ghosts;
-                if(g != null && g != lastGhosts){ frames++; lastGhosts = g; stages.add(mod.stage); }
-                if(!mod.planning){
-                    if(mod.preview == null){ fail("no preview after planning"); return; }
-                    Log.info("[selftest] planning done: @ gray frames, stages @; @", frames, stages, Strings.stripColors(mod.job.summary()).replace('\n', ' '));
-                    planned = mod.preview.size;
-                    mod.commit();
-                    phase = 3;
-                    timer = 0f;
+            case 2: // planning, then the gray replay, then the preview
+                keepNearRegion();
+                if(mod.phase == AutoBuildMod.State.playback){
+                    sawReplay = true;
+                    if(!shotReplay && mod.playIndex >= mod.frames.size / 2){ shot = "replay"; shotReplay = true; }
                 }
+                if(mod.phase == AutoBuildMod.State.preview){
+                    if(mod.variants.size != 1){ fail("expected 1 plan, got " + mod.variants.size); return; }
+                    DrillFieldJob.Candidate c = mod.current();
+                    if(previewShotAt < 0) Log.info("[selftest] plan 1: @ keyframes, replay seen: @; @ | @ | score @", mod.frames.size, sawReplay,
+                        Strings.stripColors(c.summary()).replace('\n', ' '), c.portText(), Strings.autoFixed((float)c.score(), 1));
+                    if(!sawReplay || mod.frames.size < 2){ fail("no gray replay"); return; }
+                    if(previewShotAt < 0){ shot = "preview"; previewShotAt = timer; }
+                    if(timer - previewShotAt < 0.5f) return; // let the screenshot happen first
+                    mod.anotherPlan();
+                    phase = 3;
+                }else if(mod.phase == AutoBuildMod.State.idle){ fail("planning failed"); return; }
                 break;
-            case 3: // keep the unit next to the region while it builds
+            case 3: // "Another plan" adds a second, different plan
+                keepNearRegion();
+                if(mod.phase == AutoBuildMod.State.preview && mod.variants.size == 2){
+                    DrillFieldJob.Candidate a = mod.variants.get(0), b = mod.variants.get(1);
+                    Log.info("[selftest] plan 2: @ | score @ (plan 1: @), different: @", b.portText(), Strings.autoFixed((float)b.score(), 1),
+                        Strings.autoFixed((float)a.score(), 1), !a.signature.equals(b.signature));
+                    if(a.signature.equals(b.signature)){ fail("another plan is identical"); return; }
+                    mod.show(a.score() >= b.score() ? 0 : 1);
+                    planned = mod.current().plans.size;
+                    built = mod.current();
+                    mod.commit();
+                    phase = 4;
+                    timer = 0f;
+                }else if(mod.phase == AutoBuildMod.State.idle){ fail("another plan failed"); return; }
+                break;
+            case 4: // keep the unit next to the region while it builds
                 DrillFieldJob job = mod.job;
                 player.unit().set((job.ax + job.bx) / 2f * tilesize, (job.ay + job.by) / 2f * tilesize);
                 if(player.unit().plans().isEmpty() || timer > 90f){
-                    int built = 0;
-                    for(BuildPlan p : job.plans){
+                    int done = 0;
+                    for(BuildPlan p : built.plans){
                         var t = world.tile(p.x, p.y);
-                        if(t != null && t.block() == p.block) built++;
+                        if(t != null && t.block() == p.block) done++;
                     }
-                    Log.info("[selftest] built @/@ planned blocks (queue left: @)", built, planned, player.unit().plans().size);
-                    Log.info(built == planned ? "[selftest] PASS" : "[selftest] FAIL: not everything was built");
+                    Log.info("[selftest] built @/@ planned blocks (queue left: @)", done, planned, player.unit().plans().size);
+                    Log.info(done == planned ? "[selftest] PASS" : "[selftest] FAIL: not everything was built");
                     phase = 0;
                     Core.app.exit();
                 }
                 break;
         }
+    }
+
+    void keepNearRegion(){
+        DrillFieldJob job = mod.job;
+        if(player.unit() != null) player.unit().set((job.ax + job.bx) / 2f * tilesize, (job.ay + job.by) / 2f * tilesize);
     }
 
     void fail(String msg){

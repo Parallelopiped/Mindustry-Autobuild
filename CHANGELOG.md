@@ -7,6 +7,28 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-16
+### Added
+- **Click to place ports**: after the settings dialog, click any tile in the region for the item
+  output, then the water input; the click snaps to the nearest edge, with a marker and label under
+  the cursor. Right-click / "Auto" lets the planner choose: it tries every side and keeps the best.
+- **Another plan**: searches again with different preferences (variant noise on drill values,
+  routing order, turn penalty, lattice seed); duplicates are skipped. Browse plans with ◀ ▶; the
+  best-scoring one is marked. The first plan is already the best of three variants.
+- **Search replay**: keyframes recorded during the background search are replayed as gray ghosts
+  (at most ~2.5 s, skippable; "Replay the search" option in the dialog).
+- Preview panel shows summary, ports, plan number and score; port labels drawn in the world.
+- `deploy.sh`: installs the jar into the WSL test profiles and the Windows game's mods folder.
+
+### Fixed
+- The final preview drew nothing: `Block.drawPlan` scales by `BuildPlan.animScale`, which is 0 for
+  plans outside the player's own queue. (The plan only became visible once it was built.)
+
+### Changed
+- Output side / water side buttons and position sliders were replaced by clicking.
+- The region is snapshotted once; every candidate side reuses the snapshot.
+- Server test: `dir` and `water=` accept `auto`.
+
 ## [0.5.1] - 2026-10-16
 ### Fixed
 - Water rows stopped at walls longer than a bridge conduit's range: drills beyond the wall got no
@@ -83,6 +105,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.6.0]: #
 [0.5.1]: #
 [0.5.0]: #
 [0.4.0]: #

@@ -11,11 +11,14 @@ import java.util.*;
  */
 public class PlannerTest{
     static final int[] DU = {1, 0, -1, 0}, DV = {0, 1, 0, -1};
+    static int variantsTried, variantsDiffer, variantsBetter;
 
     public static void main(String[] args){
         int fails = 0;
         String show = System.getProperty("show");
         for(int seed = 0; seed < 400; seed++) fails += run(seed, seed < 2 || Integer.toString(seed).equals(show));
+        System.out.println("variants: " + variantsDiffer + "/" + variantsTried + " maps got a different alternative; "
+            + variantsBetter + " alternatives scored >5% above the default plan");
         fails += oreRule();
         fails += waterAroundWall();
         compare();
@@ -91,6 +94,26 @@ public class PlannerTest{
         long ms = (System.nanoTime() - t) / 1_000_000;
 
         String errs = ok ? FlowCheck.check(m, s, p, power) : "";
+        if(ok && seed % 5 == 0){
+            // alternative plans ("Another plan") must be valid too, and differ from the best one
+            Set<String> base = new HashSet<>();
+            for(Place pl : p.places) base.add(pl.toString());
+            boolean anyDifferent = false;
+            for(int variant = 1; variant <= 3; variant++){
+                Params pv = params(m, s, mode, power, bridges, waterSide, waterPos);
+                pv.variant = variant;
+                DrillLayoutPlanner q = new DrillLayoutPlanner(pv);
+                if(!q.plan()) continue;
+                String e = FlowCheck.check(m, s, q, power);
+                if(!e.isEmpty()) errs += "variant" + variant + ": " + e;
+                Set<String> vs = new HashSet<>();
+                for(Place pl : q.places) vs.add(pl.toString());
+                if(!vs.equals(base)) anyDifferent = true;
+                if(q.score > p.score + 1e-6 && Math.abs(q.score - p.score) > 0.05 * Math.abs(p.score) + 1) variantsBetter++;
+            }
+            variantsTried++;
+            if(anyDifferent) variantsDiffer++;
+        }
         if(ok && snapshots[0] == 0) errs += "no progress snapshots ";
         if(print || !errs.isEmpty()){
             System.out.println("seed " + seed + " " + m.W + "x" + m.H + " s=" + s + " " + mode + " power=" + power + " bridges=" + bridges + " water=" + waterSide + " wet=" + p.wetDrills

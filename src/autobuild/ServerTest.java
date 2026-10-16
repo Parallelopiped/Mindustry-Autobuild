@@ -16,7 +16,7 @@ import static mindustry.Vars.*;
 /**
  * Dedicated-server commands for end-to-end checks without a GUI:
  * <pre>
- * abtest &lt;item&gt; &lt;drill&gt; &lt;E|N|W|S&gt; &lt;output|efficiency&gt; [size] [belt]
+ * abtest &lt;item&gt; &lt;drill&gt; &lt;E|N|W|S|auto&gt; &lt;output|efficiency&gt; [size=N belt=NAME nobridge water=SIDE[:FRAC]|auto conduit=NAME]
  *     finds the size x size window with the most &lt;item&gt; ore, plans it, places every block
  *     instantly (a power source replaces the first node), puts a vault behind the port
  * abcount
@@ -30,15 +30,17 @@ public class ServerTest{
     static float predicted;
 
     static void register(CommandHandler handler){
-        handler.register("abtest", "<item> <drill> <dir> <mode> [options...]", "AutoBuild: plan and place a drill field. options: size=N belt=NAME nobridge water=SIDE[:FRAC] conduit=NAME", args -> {
+        handler.register("abtest", "<item> <drill> <dir> <mode> [options...]", "AutoBuild: plan and place a drill field. dir may be auto. options: size=N belt=NAME nobridge water=SIDE[:FRAC]|auto conduit=NAME", args -> {
             if(!state.isGame()){ Log.err("host a map first"); return; }
             Item item = content.item(args[0]);
             Block drill = content.block(args[1]);
-            int dir = "ENWS".indexOf(Character.toUpperCase(args[2].charAt(0)));
+            boolean autoOut = args[2].equalsIgnoreCase("auto");
+            int dir = autoOut ? -1 : "ENWS".indexOf(Character.toUpperCase(args[2].charAt(0)));
             int size = 30;
             Block belt = Blocks.conveyor, conduit = Blocks.conduit;
             boolean bridges = true;
             int waterDir = -1;
+            boolean water = false;
             float waterFrac = 0.5f;
             // a variadic "[options...]" parameter arrives as one space-joined string
             Seq<String> opts = new Seq<>();
@@ -51,6 +53,8 @@ public class ServerTest{
                     case "conduit": conduit = content.block(kv[1]); break;
                     case "nobridge": bridges = false; break;
                     case "water":
+                        water = true;
+                        if(kv[1].equalsIgnoreCase("auto")) break;
                         String[] wf = kv[1].split(":");
                         waterDir = "ENWS".indexOf(Character.toUpperCase(wf[0].charAt(0)));
                         if(wf.length > 1) waterFrac = Strings.parseFloat(wf[1], 0.5f);
@@ -58,17 +62,19 @@ public class ServerTest{
                     default: Log.err("unknown option @", opt); return;
                 }
             }
-            if(item == null || !(drill instanceof Drill) || dir < 0 || belt == null){ Log.err("bad arguments"); return; }
+            if(item == null || !(drill instanceof Drill) || (dir < 0 && !autoOut) || belt == null){ Log.err("bad arguments"); return; }
 
             DrillFieldJob job = new DrillFieldJob();
-            job.drill = (Drill)drill; job.target = item; job.outDir = dir; job.belt = belt;
+            job.drill = (Drill)drill; job.target = item; job.outPick = dir; job.outFrac = 0.5f; job.belt = belt;
             job.mode = args[3].startsWith("e") ? Mode.EFFICIENCY : Mode.OUTPUT;
             job.bridges = bridges;
-            job.water = waterDir >= 0; job.waterDir = Math.max(waterDir, 0); job.waterFrac = waterFrac; job.conduit = conduit;
+            job.water = water; job.waterPick = waterDir; job.waterFrac = waterFrac; job.conduit = conduit;
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
-            if(!job.run()){
-                Log.err("[abtest] plan failed: @", job.error);
+            DrillFieldJob.Snapshot sn = job.prepare();
+            DrillFieldJob.Candidate cand = sn == null ? null : job.search(sn, 0, 3, null);
+            if(cand == null || !cand.ok()){
+                Log.err("[abtest] plan failed: @", cand == null ? job.error : cand.error);
                 // world-oriented dump: 'W' wall, '#' otherwise unbuildable, 'o' target ore, '+' other ore, '~' deep, 'B' building
                 for(int y = job.by; y >= job.ay; y--){
                     StringBuilder sb = new StringBuilder();
@@ -80,19 +86,21 @@ public class ServerTest{
                 }
                 return;
             }
-            Log.info("[abtest] @", Strings.stripColors(job.summary()).replace('\n', ' '));
-            if(bridges){
-                // same region without bridges, for a like-for-like comparison (ore is randomized per server start)
+            Log.info("[abtest] @ | @ | variant @", Strings.stripColors(cand.summary()).replace('\n', ' '), cand.portText(), cand.variant);
+            {
+                // same region without bridges or water, same output side (ore is randomized per server start)
                 DrillFieldJob alt = new DrillFieldJob();
-                alt.drill = job.drill; alt.target = job.target; alt.outDir = job.outDir; alt.belt = job.belt; alt.mode = job.mode;
+                alt.drill = job.drill; alt.target = job.target; alt.outPick = cand.outDir; alt.belt = job.belt; alt.mode = job.mode;
                 alt.ax = job.ax; alt.ay = job.ay; alt.bx = job.bx; alt.by = job.by; alt.bridges = false;
-                if(alt.run()) Log.info("[abtest] baseline (no bridges, no water): @", Strings.stripColors(alt.summary()).replace('\n', ' '));
+                DrillFieldJob.Snapshot asn = alt.prepare();
+                DrillFieldJob.Candidate a = asn == null ? null : alt.search(asn, 0, 1, null);
+                if(a != null && a.ok()) Log.info("[abtest] baseline (no bridges, no water): @", Strings.stripColors(a.summary()).replace('\n', ' '));
             }
 
             boolean first = true;
-            for(BuildPlan p : job.plans){
+            for(BuildPlan p : cand.plans){
                 Block b = p.block;
-                if(first && b == job.node){ b = Blocks.powerSource; first = false; }
+                if(first && b == cand.node){ b = Blocks.powerSource; first = false; }
                 Tile t = world.tile(p.x, p.y);
                 t.setBlock(b, job.team, p.rotation);
                 // same sequence as ConstructBlock.constructFinish for a player-built plan
@@ -103,13 +111,14 @@ public class ServerTest{
                 }
             }
             // vault (3x3) right behind the port, outside the region
-            int ex = job.portX + (dir == 0 ? 2 : dir == 2 ? -2 : 0), ey = job.portY + (dir == 1 ? 2 : dir == 3 ? -2 : 0);
+            int od = cand.outDir;
+            int ex = cand.portX + (od == 0 ? 2 : od == 2 ? -2 : 0), ey = cand.portY + (od == 1 ? 2 : od == 3 ? -2 : 0);
             Tile vt = world.tile(ex, ey);
             if(vt == null){ Log.err("no room for the vault"); return; }
             vt.setBlock(Blocks.vault, job.team, 0);
-            if(job.waterPortX >= 0){
+            if(cand.waterPortX >= 0){
                 // infinite water right outside the water port
-                Tile st = world.tile(job.waterPortX + Geometry.d4x(job.waterDir), job.waterPortY + Geometry.d4y(job.waterDir));
+                Tile st = world.tile(cand.waterPortX + Geometry.d4x(cand.waterDir), cand.waterPortY + Geometry.d4y(cand.waterDir));
                 if(st != null){
                     st.setBlock(Blocks.liquidSource, job.team, 0);
                     st.build.configured(null, Liquids.water);
@@ -117,8 +126,8 @@ public class ServerTest{
                 }
             }
             vault = vt.build;
-            lastCount = 0; lastTime = Time.millis(); predicted = Math.min(job.itemsPerSecond, job.beltCapacity);
-            Log.info("[abtest] placed @ blocks, vault at (@,@), predicted @/s", job.plans.size, ex, ey, Strings.autoFixed(predicted, 2));
+            lastCount = 0; lastTime = Time.millis(); predicted = Math.min(cand.itemsPerSecond, cand.beltCapacity);
+            Log.info("[abtest] placed @ blocks, vault at (@,@), predicted @/s", cand.plans.size, ex, ey, Strings.autoFixed(predicted, 2));
         });
 
         handler.register("abcount", "AutoBuild: report items collected by the abtest vault", args -> {
