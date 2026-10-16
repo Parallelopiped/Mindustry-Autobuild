@@ -30,7 +30,7 @@ public class DrillLayoutPlanner{
     static final int[] DU = {1, 0, -1, 0}, DV = {0, 1, 0, -1};
 
     // occupancy codes; >= 0 is a routed belt with that direction
-    static final int FREE = -1, ODRILL = -2, LANE = -3, ONODE = -4, OBRIDGE = -5, BUFFER = -6, OWATER = -7;
+    static final int FREE = -1, ODRILL = -2, LANE = -3, ONODE = -4, OBRIDGE = -5, BUFFER = -6, OWATER = -7, RESERVED = -8;
 
     public static class Place{
         public final int kind, u, v, dir, ore;
@@ -563,36 +563,10 @@ public class DrillLayoutPlanner{
         }
 
         if(!routers.isEmpty()){
-            // port router, then one A* leg per water row junction (nearest first), each from any
-            // router already placed; the reserved corridor is cheap so legs follow it
             int[] port = {waterU, waterV, LROUTER, 0, waterU, waterV};
             water.add(port); waterAt.put(key(waterU, waterV), port);
             occ[waterU][waterV] = OWATER;
-            List<Integer> rows = new ArrayList<>(routers.keySet());
-            rows.sort(Comparator.comparingInt(r -> Math.abs(r - waterV) + (p.waterSide == 2 ? 0 : waterU)));
-            for(int r : rows){
-                checkCancel();
-                int jx = -1;
-                for(int x = 0; x <= routers.get(r).first(); x++) if(waterPlaceable(x, r)){ jx = x; break; }
-                if(jx < 0) continue;
-                // keep the leg off the row it feeds (it would point back into the junction)
-                List<int[]> reserved = new ArrayList<>();
-                for(int x = jx + 1; x <= routers.get(r).last(); x++) if(occ[x][r] == FREE){ occ[x][r] = OWATER; reserved.add(new int[]{x, r}); }
-                List<int[]> leg = routeLiquid(jx, r);
-                for(int[] rv : reserved) occ[rv[0]][rv[1]] = FREE;
-                if(leg == null) continue;
-                for(int[] el : leg){ water.add(el); waterAt.put(key(el[0], el[1]), el); occ[el[0]][el[1]] = OWATER; }
-                int[] junction = {jx, r, LROUTER, 0, jx, r};
-                water.add(junction); waterAt.put(key(jx, r), junction); occ[jx][r] = OWATER;
-                // the row itself: conduits east from the junction with routers by its drills
-                List<int[]> line = new ArrayList<>();
-                for(int x = jx; x <= routers.get(r).last(); x++) line.add(new int[]{x, r});
-                Set<Long> rrs = new HashSet<>();
-                for(int x : routers.get(r)) rrs.add(key(x, r));
-                walkLine(line, rrs);
-                for(int[] el : water) occ[el[0]][el[1]] = OWATER;
-                snapshot("water rows", false);
-            }
+            connectWaterRows(routers);
         }
 
         // a drill stays wet only if a router or bridge-conduit end sits next to it
@@ -608,53 +582,157 @@ public class DrillLayoutPlanner{
     }
 
     /**
-     * Liquid A* to a junction tile (tu,tv): starts next to any router / bridge-conduit end already
-     * placed; moves are conduit steps or bridge-conduit jumps over anything. The last element must
-     * output into the junction (a conduit pointing at it, or a bridge end beside it). Returns the
-     * elements to place (possibly empty if a router is already adjacent), or null.
+     * Connects every water row router. A row is split into runs of contiguous buildable tiles;
+     * each run gets its own connection: a liquid A* from any element that already has water to any
+     * tile of the run (so it can go around walls the row itself can't cross). That tile becomes the
+     * junction router and conduits run from it both ways, only as far as the outermost router.
+     * Runs that can't be reached yet are retried after other runs have added more water sources.
      */
-    List<int[]> routeLiquid(int tu, int tv){
-        for(int d = 0; d < 4; d++) if(feeds(key(tu + DU[d], tv + DV[d]), (d + 2) % 4)) return new ArrayList<>();
+    void connectWaterRows(TreeMap<Integer, TreeSet<Integer>> routers){
+        List<int[]> runs = new ArrayList<>(); // {row, a, b}
+        for(Map.Entry<Integer, TreeSet<Integer>> en : routers.entrySet()){
+            int r = en.getKey();
+            TreeSet<Integer> left = new TreeSet<>(en.getValue());
+            while(!left.isEmpty()){
+                int x = left.first(), a = x, b = x;
+                while(a - 1 >= 0 && waterPlaceable(a - 1, r)) a--;
+                while(b + 1 <= W - 2 && waterPlaceable(b + 1, r)) b++;
+                runs.add(new int[]{r, a, b});
+                left.removeAll(new ArrayList<>(left.subSet(a, true, b, true)));
+            }
+        }
+        runs.sort(Comparator.comparingInt(rn -> Math.abs(rn[0] - waterV) + Math.abs(rn[1] - waterU)));
+        // keep every run's router span off-limits to other runs' connections
+        for(int[] rn : runs) reserveSpan(routers, rn, true);
+        boolean progress = true;
+        while(progress && !runs.isEmpty()){
+            progress = false;
+            for(Iterator<int[]> it = runs.iterator(); it.hasNext(); ){
+                checkCancel();
+                int[] rn = it.next();
+                int r = rn[0];
+                TreeSet<Integer> rs = new TreeSet<>(routers.get(r).subSet(rn[1], true, rn[2], true));
+                int lo = rs.first(), hi = rs.last();
+                reserveSpan(routers, rn, false);
+                // junction candidates: the span plus free tiles next to it (others' connections may have taken some)
+                int a = lo, b = hi;
+                while(a - 1 >= 0 && waterPlaceable(a - 1, r)) a--;
+                while(b + 1 <= W - 2 && waterPlaceable(b + 1, r)) b++;
+                // keep the connection off the run itself; it may only end by feeding one of its tiles
+                List<int[]> targets = new ArrayList<>();
+                List<Float> terminal = new ArrayList<>();
+                for(int x = a; x <= b; x++){
+                    occ[x][r] = OWATER;
+                    targets.add(new int[]{x, r});
+                    terminal.add(0.5f * Math.max(0, Math.max(lo - x, x - hi))); // extra conduits outside the router span
+                }
+                int[] junction = new int[2];
+                List<int[]> leg = routeLiquid(targets, terminal, r, a, b, junction);
+                for(int x = a; x <= b; x++) occ[x][r] = FREE;
+                if(leg == null){ reserveSpan(routers, rn, true); continue; }
+                it.remove();
+                progress = true;
+                for(int[] el : leg){ water.add(el); waterAt.put(key(el[0], el[1]), el); occ[el[0]][el[1]] = OWATER; }
+                int j = junction[0];
+                placeWater(new int[]{j, r, LROUTER, 0, j, r});
+                for(int x = j + 1; x <= hi; x++) placeWater(rs.contains(x) ? new int[]{x, r, LROUTER, 0, x, r} : new int[]{x, r, CONDUIT, 0, x, r});
+                for(int x = j - 1; x >= lo; x--) placeWater(rs.contains(x) ? new int[]{x, r, LROUTER, 0, x, r} : new int[]{x, r, CONDUIT, 2, x, r});
+                snapshot("water rows", false);
+            }
+        }
+        for(int[] rn : runs) reserveSpan(routers, rn, false); // unreachable runs
+    }
+
+    void reserveSpan(TreeMap<Integer, TreeSet<Integer>> routers, int[] rn, boolean on){
+        NavigableSet<Integer> rs = routers.get(rn[0]).subSet(rn[1], true, rn[2], true);
+        for(int x = rs.first(); x <= rs.last(); x++){
+            if(on && occ[x][rn[0]] == FREE) occ[x][rn[0]] = RESERVED;
+            else if(!on && occ[x][rn[0]] == RESERVED) occ[x][rn[0]] = FREE;
+        }
+    }
+
+    void placeWater(int[] el){
+        water.add(el);
+        waterAt.put(key(el[0], el[1]), el);
+        occ[el[0]][el[1]] = OWATER;
+    }
+
+    /**
+     * Multi-target liquid A*: starts next to any element that outputs water in that direction;
+     * moves are conduit steps or bridge-conduit jumps over anything; finishes by feeding one of
+     * `targets` (a conduit pointing at it, or a bridge end beside it), paying that target's
+     * terminal cost. The targets lie in row r, columns a..b (used for the heuristic). Writes the
+     * chosen target to `junction`; returns the elements to place (empty if water is already
+     * adjacent), or null.
+     */
+    List<int[]> routeLiquid(List<int[]> targets, List<Float> terminal, int r, int a, int b, int[] junction){
+        int T = targets.size();
+        Map<Long, Integer> tIndex = new HashMap<>();
+        for(int k = 0; k < T; k++) tIndex.put(key(targets.get(k)[0], targets.get(k)[1]), k);
         int N = W * H * 8;
-        float[] cost = new float[N];
+        float[] cost = new float[N + T];
         Arrays.fill(cost, Float.MAX_VALUE);
-        int[] prev = new int[N];
-        PriorityQueue<float[]> open = new PriorityQueue<>(Comparator.comparingDouble(a -> a[0]));
+        int[] prev = new int[N + T];
+        int[] goalDir = new int[T];
+        PriorityQueue<float[]> open = new PriorityQueue<>(Comparator.comparingDouble(x -> x[0]));
         int range = p.liquidBridgeRange;
+        // water already next to a target: no connection needed
+        for(int k = 0; k < T; k++){
+            int[] tg = targets.get(k);
+            for(int d = 0; d < 4; d++){
+                if(feeds(key(tg[0] + DU[d], tg[1] + DV[d]), (d + 2) % 4) && terminal.get(k) < cost[N + k]){
+                    cost[N + k] = terminal.get(k); prev[N + k] = -2;
+                    open.add(new float[]{cost[N + k], N + k});
+                }
+            }
+        }
         for(int[] e : water){
             for(int d = 0; d < 4; d++){
                 int nu = e[0] + DU[d], nv = e[1] + DV[d];
                 if(!feeds(key(e[0], e[1]), d) || !liquidFree(nu, nv)) continue;
                 int id = sid(nu, nv, d, 0);
                 float c = stepCost(nu, nv);
-                if(c < cost[id]){ cost[id] = c; prev[id] = -1; open.add(new float[]{c + Math.abs(nu - tu) + Math.abs(nv - tv), id}); }
+                if(c < cost[id]){ cost[id] = c; prev[id] = -1; open.add(new float[]{c + hRun(nu, nv, r, a, b), id}); }
             }
         }
         while(!open.isEmpty()){
             float[] cur = open.poll();
             int id = (int)cur[1];
+            if(id >= N){
+                int k = id - N;
+                if(cur[0] > cost[id] + 1e-3f) continue;
+                junction[0] = targets.get(k)[0]; junction[1] = targets.get(k)[1];
+                return prev[id] == -2 ? new ArrayList<>() : liquidPath(prev, prev[id], goalDir[k]);
+            }
             int L = id & 1, d = (id >> 1) & 3, t = id >> 3, u = t / H, v = t % H;
             float c = cost[id];
-            if(cur[0] - (Math.abs(u - tu) + Math.abs(v - tv)) > c + 1e-3f) continue;
-            // goal: output into the junction (conduit pointing at it / bridge end beside it)
-            for(int nd = 0; nd < 4; nd++){
-                if(nd == (d + 2) % 4) continue;
-                if(u + DU[nd] == tu && v + DV[nd] == tv) return liquidPath(prev, id, nd);
-            }
+            if(cur[0] - hRun(u, v, r, a, b) > c + 1e-3f) continue; // stale
             for(int nd = 0; nd < 4; nd++){
                 if(nd == (d + 2) % 4) continue;
                 float turn = nd != d ? 0.2f : 0f;
                 int nu = u + DU[nd], nv = v + DV[nd];
-                if(liquidFree(nu, nv) && !(nu == tu && nv == tv)) relax(open, cost, prev, id, sid(nu, nv, nd, 0), c + stepCost(nu, nv) + turn, nu, nv, tu, tv);
-                for(int k = 2; k <= range; k++){
-                    int ju = u + DU[nd] * k, jv = v + DV[nd] * k;
+                Integer k = tIndex.get(key(nu, nv));
+                if(k != null){
+                    // feed the run here (conduit pointing at it, or a bridge end dumping into it)
+                    float gc = c + terminal.get(k);
+                    if(gc < cost[N + k]){ cost[N + k] = gc; prev[N + k] = id; goalDir[k] = nd; open.add(new float[]{gc, N + k}); }
+                    continue;
+                }
+                if(liquidFree(nu, nv)) relax(open, cost, prev, id, sid(nu, nv, nd, 0), c + stepCost(nu, nv) + turn, hRun(nu, nv, r, a, b));
+                for(int jump = 2; jump <= range; jump++){
+                    int ju = u + DU[nd] * jump, jv = v + DV[nd] * jump;
                     if(ju < 0 || jv < 0 || ju >= W || jv >= H) break;
-                    if(!liquidFree(ju, jv) || (ju == tu && jv == tv)) continue;
-                    relax(open, cost, prev, id, sid(ju, jv, nd, 1), c + 3f + 0.1f * k + turn, ju, jv, tu, tv);
+                    if(!liquidFree(ju, jv)) continue;
+                    relax(open, cost, prev, id, sid(ju, jv, nd, 1), c + 3f + 0.1f * jump + turn, hRun(ju, jv, r, a, b));
                 }
             }
         }
         return null;
+    }
+
+    /** admissible: cheapest step costs 0.5 */
+    float hRun(int u, int v, int r, int a, int b){
+        return 0.5f * (Math.abs(v - r) + Math.max(0, Math.max(a - u, u - b)));
     }
 
     boolean liquidFree(int u, int v){
@@ -665,10 +743,10 @@ public class DrillLayoutPlanner{
     /** the reserved corridor is cheaper, so legs follow it unless it's blocked */
     float stepCost(int u, int v){ return mask[u][v] ? 0.5f : 1f; }
 
-    void relax(PriorityQueue<float[]> open, float[] cost, int[] prev, int from, int to, float nc, int u, int v, int tu, int tv){
+    void relax(PriorityQueue<float[]> open, float[] cost, int[] prev, int from, int to, float nc, float h){
         if(nc < cost[to]){
             cost[to] = nc; prev[to] = from;
-            open.add(new float[]{nc + Math.abs(u - tu) + Math.abs(v - tv), to});
+            open.add(new float[]{nc + h, to});
         }
     }
 
@@ -705,47 +783,6 @@ public class DrillLayoutPlanner{
 
     boolean waterPlaceable(int u, int v){
         return u >= 0 && v >= 0 && u < W - 1 && v < H && p.beltOk[u][v] && occ[u][v] == FREE;
-    }
-
-    /**
-     * Lays water blocks along a straight line of tiles (flowing in list order): routers at
-     * `routerTiles`, conduits elsewhere pointing to the next tile. Tiles that already hold water
-     * are reused. An unbuildable gap is jumped with a bridge conduit pair when in range (not from a
-     * router: routers can't link). Stops at the first gap it can't cross.
-     */
-    void walkLine(List<int[]> tiles, Set<Long> routerTiles){
-        int[] last = null;
-        int i = 0;
-        while(i < tiles.size()){
-            int[] t = tiles.get(i);
-            long k = key(t[0], t[1]);
-            int[] existing = waterAt.get(k);
-            if(existing != null){ last = existing; i++; continue; }
-            if(waterPlaceable(t[0], t[1])){
-                int d = i + 1 < tiles.size() ? dirOf(t, tiles.get(i + 1)) : (i > 0 ? dirOf(tiles.get(i - 1), t) : 0);
-                int[] el = routerTiles.contains(k) ? new int[]{t[0], t[1], LROUTER, 0, t[0], t[1]} : new int[]{t[0], t[1], CONDUIT, d, t[0], t[1]};
-                water.add(el); waterAt.put(k, el);
-                last = el;
-                i++;
-                continue;
-            }
-            if(last == null || last[2] == LROUTER || i == 0) return;
-            int[] from = tiles.get(i - 1);
-            int land = -1;
-            for(int j = i + 1; j < tiles.size(); j++){
-                int[] c = tiles.get(j);
-                int dist = Math.abs(c[0] - from[0]) + Math.abs(c[1] - from[1]);
-                if(!straight(from, c) || dist > p.liquidBridgeRange) break;
-                if(waterPlaceable(c[0], c[1])){ land = j; break; }
-            }
-            if(land < 0) return;
-            int[] c = tiles.get(land);
-            last[2] = LBRIDGE; last[4] = c[0]; last[5] = c[1];
-            int[] el = new int[]{c[0], c[1], LBRIDGE, dirOf(from, c), c[0], c[1]};
-            water.add(el); waterAt.put(key(c[0], c[1]), el);
-            last = el;
-            i = land + 1;
-        }
     }
 
     static long key(int u, int v){ return ((long)u << 32) | (v & 0xffffffffL); }

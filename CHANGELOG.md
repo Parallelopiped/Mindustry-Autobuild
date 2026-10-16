@@ -7,6 +7,15 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-16
+### Fixed
+- Water rows stopped at walls longer than a bridge conduit's range: drills beyond the wall got no
+  water, and a dead-end conduit tail was left at the wall. Each water row is now split into
+  contiguous runs, and every run is connected on its own by a multi-target liquid A* that can go
+  around the wall; conduits only extend to the outermost router.
+- Liquid A* heuristic was inadmissible (corridor tiles cost 0.5), which could pick bridge-conduit
+  chains over plain conduits.
+
 ## [0.5.0] - 2026-10-16
 ### Added
 - **Water boost**: "Water boost" option with water port side (any side but the output),
@@ -74,6 +83,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.5.1]: #
 [0.5.0]: #
 [0.4.0]: #
 [0.3.1]: #

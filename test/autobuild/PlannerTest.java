@@ -17,6 +17,7 @@ public class PlannerTest{
         String show = System.getProperty("show");
         for(int seed = 0; seed < 400; seed++) fails += run(seed, seed < 2 || Integer.toString(seed).equals(show));
         fails += oreRule();
+        fails += waterAroundWall();
         compare();
         System.out.println(fails == 0 ? "ALL OK" : fails + " FAILED");
         if(fails > 0) System.exit(1);
@@ -391,5 +392,31 @@ public class PlannerTest{
                 }
             }
         }
+    }
+
+    /**
+     * Regression for the screenshot case: ore clusters on both sides of a long wall that cuts the
+     * water rows; open ground lets water go around. Drills beyond the wall must still get water.
+     */
+    static int waterAroundWall(){
+        Map m = new Map();
+        int W = m.W = 40, H = m.H = 30;
+        m.belt = new boolean[W][H];
+        m.drop = new int[W][H];
+        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
+            m.belt[x][y] = !(x >= 12 && x <= 22 && y <= 17); // wall from the bottom edge up, cutting rows 0..17
+            boolean ore = (x >= 3 && x <= 10 && y >= 4 && y <= 14) || (x >= 25 && x <= 35 && y >= 4 && y <= 14);
+            m.drop[x][y] = ore && m.belt[x][y] ? 1 : -1;
+        }
+        m.drill = drillOk(m, 2);
+        DrillLayoutPlanner p = new DrillLayoutPlanner(params(m, 2, Mode.OUTPUT, false, false, 1, 5));
+        p.plan();
+        String errs = FlowCheck.check(m, 2, p, false);
+        int far = 0, farWet = 0;
+        for(Place pl : p.places) if(pl.kind == DrillLayoutPlanner.DRILL && pl.u > 22){ far++; if(pl.dir == 1) farWet++; }
+        boolean ok = errs.isEmpty() && far > 0 && farWet * 10 >= far * 8;
+        System.out.println("water around wall: wet=" + p.wetDrills + "/" + p.drills + ", beyond wall " + farWet + "/" + far + (ok ? " ok" : " FAIL " + errs));
+        if(!ok || System.getProperty("showwall") != null) print(m, 2, p);
+        return ok ? 0 : 1;
     }
 }
