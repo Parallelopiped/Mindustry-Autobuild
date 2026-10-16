@@ -98,13 +98,15 @@ public class DrillFieldJob{
         Params p = new Params();
         p.W = W; p.H = H; p.drillSize = s; p.target = target.id; p.mode = mode; p.power = power;
         p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H]; p.drillOk = new boolean[W][H]; p.drop = new int[W][H];
+        p.lowPriority = new boolean[content.items().size];
+        for(Item i : content.items()) p.lowPriority[i.id] = i.lowPriority;
         if(node != null){ p.nodeRange = node.laserRange; p.nodeMaxLinks = node.maxNodes; }
         for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
             int x = wx(u, v), y = wy(u, v);
             p.beltOk[u][v] = Build.validPlace(belt, team, x, y, 0);
             p.nodeOk[u][v] = node != null && Build.validPlace(node, team, x, y, 0);
-            Item d = world.tile(x, y).drop();
-            p.drop[u][v] = d != null && drill.tier >= d.hardness ? d.id : -1;
+            Tile t = world.tile(x, y);
+            p.drop[u][v] = drill.canMine(t) ? drill.getDrop(t).id : -1;
         }
         for(int u = 0; u + s <= W; u++) for(int v = 0; v + s <= H; v++){
             p.drillOk[u][v] = Build.validPlace(drill, team, originX(u, v, s), originY(u, v, s), 0);

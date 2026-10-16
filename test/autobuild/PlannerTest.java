@@ -9,6 +9,7 @@ public class PlannerTest{
     public static void main(String[] args){
         int fails = 0;
         for(int seed = 0; seed < 300; seed++) fails += run(seed, seed < 2 || Integer.toString((int)seed).equals(System.getProperty("show")));
+        fails += oreRule();
         compareModes();
         System.out.println(fails == 0 ? "ALL OK" : fails + " FAILED");
         if(fails > 0) System.exit(1);
@@ -143,5 +144,34 @@ public class PlannerTest{
                     s, m, p.oreTiles, total, 100.0 * p.oreTiles / total, p.drills, belts, p.nodes, (double)p.oreTiles / Math.max(1, p.drills));
             }
         }
+    }
+
+    /** Drill.countOre order: (not lowPriority, count, id). Items: 0 copper, 1 lead, 5 sand(low). */
+    static int oreRule(){
+        int[][][] cases = {
+            // 2x2 footprint {a,b,c,d}, target, expected ore count
+            {{5, 5, 5, 0}, {0}, {1}},   // 3 sand + 1 copper: copper wins (sand is low priority)
+            {{5, 5, 5, 0}, {5}, {0}},
+            {{0, 0, 1, 1}, {1}, {2}},   // tie: higher id (lead) wins
+            {{0, 0, 1, 1}, {0}, {0}},
+            {{0, 0, 0, 1}, {0}, {3}},
+            {{5, 5, -1, -1}, {5}, {2}}, // only sand: sand is mined
+            {{1, 0, 5, 5}, {1}, {1}},   // lead/copper tie at 1, sand ignored -> lead
+        };
+        int bad = 0;
+        boolean[] low = new boolean[8];
+        low[5] = true;
+        for(int[][] c : cases){
+            Params pa = new Params();
+            pa.W = 4; pa.H = 3; pa.drillSize = 2; pa.target = c[1][0]; pa.lowPriority = low;
+            pa.drop = new int[4][3];
+            for(int[] row : pa.drop) java.util.Arrays.fill(row, -1);
+            pa.drop[0][0] = c[0][0]; pa.drop[1][0] = c[0][1]; pa.drop[0][1] = c[0][2]; pa.drop[1][1] = c[0][3];
+            pa.drillOk = new boolean[4][3]; pa.drillOk[0][0] = true;
+            int got = new DrillLayoutPlanner(pa).oreUnder(0, 0);
+            if(got != c[2][0]){ System.out.println("ore rule FAIL " + java.util.Arrays.toString(c[0]) + " target " + c[1][0] + ": got " + got + " want " + c[2][0]); bad++; }
+        }
+        System.out.println("ore rule: " + (cases.length - bad) + "/" + cases.length + " ok");
+        return bad;
     }
 }

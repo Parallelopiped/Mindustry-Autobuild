@@ -40,6 +40,8 @@ public class DrillLayoutPlanner{
         public boolean[][] drillOk;
         /** mineable item id at (u,v) for this drill, or -1 */
         public int[][] drop;
+        /** Item.lowPriority by item id (sand); null = none */
+        public boolean[] lowPriority;
         public Mode mode = Mode.OUTPUT;
         public boolean power;
         /** laser range in tiles, max links per node */
@@ -145,18 +147,33 @@ public class DrillLayoutPlanner{
         for(int u = 0; u + s <= W - 1; u++){ // column W-1 is the collector
             for(int v = 0; v + s <= H; v++){
                 if(!p.drillOk[u][v]) continue;
-                int t = 0, other = 0;
+                for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) if(p.drop[x][y] >= 0) counts[p.drop[x][y]]++;
+                int mined = -1;
                 for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++){
                     int d = p.drop[x][y];
-                    if(d < 0) continue;
-                    if(d == p.target) t++;
-                    else other = Math.max(other, ++counts[d]);
+                    if(d >= 0 && (mined < 0 || minedBefore(d, counts[d], mined, counts[mined]))) mined = d;
                 }
+                ore[u][v] = mined == p.target ? counts[mined] : 0;
                 for(int x = u; x < u + s; x++) for(int y = v; y < v + s; y++) if(p.drop[x][y] >= 0) counts[p.drop[x][y]] = 0;
-                // a drill mines whichever ore is most common under it
-                ore[u][v] = t > other ? t : 0;
             }
         }
+    }
+
+    /** Target ore a drill at min corner (u,v) would mine (0 if it would mine something else). */
+    public int oreUnder(int u, int v){
+        if(ore == null) computeOre();
+        return ore[u][v];
+    }
+
+    /**
+     * Same order as Drill.countOre: the drill mines the maximum by
+     * (not low priority, count, item id). Returns true if item a beats item b.
+     */
+    boolean minedBefore(int a, int ca, int b, int cb){
+        boolean la = p.lowPriority != null && p.lowPriority[a], lb = p.lowPriority != null && p.lowPriority[b];
+        if(la != lb) return !la;
+        if(ca != cb) return ca > cb;
+        return a > b;
     }
 
     double drillValue(int u, int v){

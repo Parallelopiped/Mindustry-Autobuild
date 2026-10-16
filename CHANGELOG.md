@@ -7,6 +7,13 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-16
+### Fixed
+- Which ore a drill mines now follows the game's exact rule (`Drill.countOre`): non-low-priority
+  items first (sand is low priority), then count, then higher item id. Previously a drill over
+  3 sand + 1 copper was treated as mining sand, and ties were rejected.
+- Mineability uses `Drill.canMine`/`getDrop` (respects blocked items and static walls).
+
 ## [0.3.0] - 2026-10-15
 ### Added
 - All drills available in the current environment can be selected (laser drill, airblast drill, …);
@@ -36,6 +43,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.3.1]: #
 [0.3.0]: #
 [0.2.0]: #
 [0.1.0]: #
