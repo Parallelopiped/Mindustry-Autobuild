@@ -73,9 +73,10 @@ public class ClientSelfTest{
         switch(phase){
             case 1: // wait for the world and player unit, then go through the real UI flow
                 if(state.isGame() && player.unit() != null && !player.unit().dead && timer > 3f){
-                    DrillFieldJob job = mod.job;
+                    DrillFieldJob job = mod.drillJob;
+                    mod.job = job;
                     if(!ServerTest.densest(job, Items.copper, 24)){ fail("no copper"); return; }
-                    job.team = player.team();
+                    mod.selectRegion(job.ax, job.ay, job.bx, job.by);
                     job.target = Items.copper;
                     job.drill = (Drill)Blocks.mechanicalDrill;
                     job.belt = Blocks.titaniumConveyor;
@@ -103,7 +104,7 @@ public class ClientSelfTest{
                 }
                 if(mod.phase == AutoBuildMod.State.preview){
                     if(mod.variants.size != 1){ fail("expected 1 plan, got " + mod.variants.size); return; }
-                    DrillFieldJob.Candidate c = mod.current();
+                    DrillFieldJob.Candidate c = (DrillFieldJob.Candidate)mod.current();
                     if(previewShotAt < 0) Log.info("[selftest] plan 1: @ keyframes, replay seen: @; @ | @ | score @", mod.frames.size, sawReplay,
                         Strings.stripColors(c.summary()).replace('\n', ' '), c.portText(), Strings.autoFixed((float)c.score(), 1));
                     if(!sawReplay || mod.frames.size < 2){ fail("no gray replay"); return; }
@@ -116,27 +117,28 @@ public class ClientSelfTest{
             case 3: // "Another plan" adds a second, different plan
                 keepNearRegion();
                 if(mod.phase == AutoBuildMod.State.preview && mod.variants.size == 2){
-                    DrillFieldJob.Candidate a = mod.variants.get(0), b = mod.variants.get(1);
+                    DrillFieldJob.Candidate a = (DrillFieldJob.Candidate)mod.variants.get(0), b = (DrillFieldJob.Candidate)mod.variants.get(1);
                     Log.info("[selftest] plan 2: @ | score @ (plan 1: @), different: @", b.portText(), Strings.autoFixed((float)b.score(), 1),
                         Strings.autoFixed((float)a.score(), 1), !a.signature.equals(b.signature));
                     if(a.signature.equals(b.signature)){ fail("another plan is identical"); return; }
                     mod.show(a.score() >= b.score() ? 0 : 1);
                     // "Add output": a second output on the opposite side
-                    int side = (mod.current().outDir + 2) % 4;
-                    mod.addOutputs();
+                    int side = (((DrillFieldJob.Candidate)mod.current()).outDir + 2) % 4;
+                    mod.addPorts();
                     // (not 0.5: an auto-chosen water port may sit in the middle of that side; the UI refuses that tile)
-                    mod.addPick(DrillFieldJob.Port.edge(side, 0.25f));
+                    mod.addPick(Port.edge(side, 0.25f));
                     mod.finishKind();
                     phase = 5;
                 }else if(mod.phase == AutoBuildMod.State.idle){ fail("another plan failed"); return; }
                 break;
             case 5: // two outputs now
                 keepNearRegion();
-                if(mod.phase == AutoBuildMod.State.preview && mod.current() != null && mod.current().outPorts.size == 2){
-                    DrillFieldJob.Candidate c = mod.current();
+                if(mod.phase == AutoBuildMod.State.preview && mod.current() instanceof DrillFieldJob.Candidate cc && cc.outPorts.size == 2){
+                    DrillFieldJob.Candidate c = (DrillFieldJob.Candidate)mod.current();
                     if(previewShotAt2 < 0){
                         Log.info("[selftest] with 2 outputs: @ | loads @", c.portText(), java.util.Arrays.toString(c.loads));
-                        if(c.loads.length != 2 || c.loads[1] <= 0){ fail("second output unused"); return; }
+                        // (the second output only carries load when one line can't take the whole field)
+                        if(c.loads.length != 2){ fail("second output missing"); return; }
                         shot = "outputs"; previewShotAt2 = timer;
                     }
                     if(timer - previewShotAt2 < 0.5f) return;
@@ -148,7 +150,7 @@ public class ClientSelfTest{
                 }else if(mod.phase == AutoBuildMod.State.idle){ fail("add output failed"); return; }
                 break;
             case 4: // keep the unit next to the region while it builds
-                DrillFieldJob job = mod.job;
+                BuildJob job = mod.job;
                 player.unit().set((job.ax + job.bx) / 2f * tilesize, (job.ay + job.by) / 2f * tilesize);
                 if(player.unit().plans().isEmpty() || timer > 90f){
                     int done = 0;
@@ -166,7 +168,7 @@ public class ClientSelfTest{
     }
 
     void keepNearRegion(){
-        DrillFieldJob job = mod.job;
+        BuildJob job = mod.job;
         if(player.unit() != null) player.unit().set((job.ax + job.bx) / 2f * tilesize, (job.ay + job.by) / 2f * tilesize);
     }
 

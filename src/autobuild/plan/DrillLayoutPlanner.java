@@ -2017,70 +2017,38 @@ public class DrillLayoutPlanner{
 
     // ------------------------------------------------------------------ power
 
-    /** Same test the game uses: laser circle around the node centre touches the target's hitbox. */
-    boolean reaches(int nu, int nv, int x, int y, int size){
-        float r = p.nodeRange * 0.95f; // small safety margin
-        float x0 = x - 0.5f, x1 = x + size - 0.5f, y0 = y - 0.5f, y1 = y + size - 0.5f;
-        float dx = Math.max(0, Math.max(x0 - nu, nu - x1)), dy = Math.max(0, Math.max(y0 - nv, nv - y1));
-        return dx * dx + dy * dy <= r * r;
-    }
-
     boolean nodeFree(int u, int v){
         return (occ[u][v] == FREE || occ[u][v] == BUFFER) && p.nodeOk[u][v];
     }
 
-    /** Places nodes covering every drill (dropping drills no node can reach). Mutates drillList. */
+    /** Places nodes covering every drill (dropping drills no node can reach), see {@link PowerNetwork}. Mutates drillList. */
     List<int[]> placePower(List<int[]> drillList){
-        // keep a couple of slots per node free for node-to-node links
-        int cap = Math.max(1, p.nodeMaxLinks - 3);
-        List<int[]> nodes;
-        while(true){
-            checkCancel();
-            nodes = new ArrayList<>();
-            nodeList = nodes;
-            int[][] save = copy(occ);
-            boolean[] covered = new boolean[drillList.size()];
-            int left = drillList.size();
-            while(left > 0){
-                int bu = -1, bv = -1;
-                double best = 0;
-                for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
-                    if(!nodeFree(u, v)) continue;
-                    int c = 0;
-                    double dist = 0;
-                    for(int i = 0; i < drillList.size(); i++){
-                        int[] d = drillList.get(i);
-                        if(!covered[i] && reaches(u, v, d[0], d[1], sz(d))){ c++; dist += Math.abs(d[0] + sz(d) / 2f - u) + Math.abs(d[1] + sz(d) / 2f - v); }
-                    }
-                    if(c == 0) continue;
-                    // most drills covered; ties go to the node closest to them
-                    double score = Math.min(c, cap) * 1000 - dist / c - (otherOre[u][v] ? 200 : 0);
-                    if(score > best){ best = score; bu = u; bv = v; }
+        PowerNetwork net = new PowerNetwork(W, H, p.nodeRange, p.nodeMaxLinks, new PowerNetwork.Host(){
+            public boolean nodeFree(int u, int v){ return DrillLayoutPlanner.this.nodeFree(u, v); }
+            public boolean nodeOk(int u, int v){ return p.nodeOk[u][v]; }
+            public double penalty(int u, int v){ return otherOre[u][v] ? 200 : 0; }
+            public int droppableAt(int u, int v, List<int[]> consumers){
+                if(occ[u][v] != ODRILL) return -1;
+                for(int i = 0; i < consumers.size(); i++){
+                    int[] d = consumers.get(i);
+                    if(u >= d[0] && u < d[0] + sz(d) && v >= d[1] && v < d[1] + sz(d)) return i;
                 }
-                if(bu < 0) break;
-                occ[bu][bv] = ONODE;
-                nodes.add(new int[]{bu, bv});
-                int taken = 0;
-                for(int i = 0; i < drillList.size() && taken < cap; i++){
-                    if(!covered[i] && reaches(bu, bv, drillList.get(i)[0], drillList.get(i)[1], sz(drillList.get(i)))){ covered[i] = true; taken++; left--; }
-                }
-                snapshot("power nodes", false);
+                return -1;
             }
-            if(left == 0) break;
-            // drop one unreachable drill; its tiles may host a node for the others
-            occ = save;
-            for(int i = 0; i < drillList.size(); i++){
-                if(!covered[i]){
-                    int[] d = drillList.remove(i);
-                    removeDrill(d);
-                    fill(d[0], d[1], sz(d), FREE);
-                    drillsDroppedForPower++;
-                    break;
-                }
+            public int size(int[] d){ return sz(d); }
+            public void occupy(int u, int v){ occ[u][v] = ONODE; }
+            public void drop(int[] d){
+                removeDrill(d);
+                fill(d[0], d[1], sz(d), FREE);
             }
-            if(drillList.isEmpty()) return nodes;
-        }
-        connectNodes(nodes, drillList);
+            public Object save(){ return copy(occ); }
+            public void restore(Object state){ occ = (int[][])state; }
+            public void progress(List<int[]> nodes, String stage){ nodeList = nodes; snapshot(stage, false); }
+            public void checkCancel(){ DrillLayoutPlanner.this.checkCancel(); }
+        });
+        List<int[]> nodes = net.place(drillList);
+        drillsDroppedForPower += net.dropped;
+        powerGroups = net.groups;
         return nodes;
     }
 
@@ -2092,92 +2060,5 @@ public class DrillLayoutPlanner{
         int[][] b = new int[a.length][];
         for(int i = 0; i < a.length; i++) b[i] = a[i].clone();
         return b;
-    }
-
-    boolean nodeLink(int[] a, int[] b){ return reaches(a[0], a[1], b[0], b[1], 1); }
-
-    /**
-     * Adds relay nodes until all nodes are linked. Dijkstra from group 0 over node positions:
-     * each relay costs 1, a relay under a drill costs 100 (that drill gets removed), others block.
-     */
-    void connectNodes(List<int[]> nodes, List<int[]> drillList){
-        int R = (int)Math.ceil(p.nodeRange);
-        while(true){
-            checkCancel();
-            int[] comp = components(nodes);
-            powerGroups = 0;
-            for(int c : comp) powerGroups = Math.max(powerGroups, c + 1);
-            if(powerGroups <= 1) return;
-
-            int[][] drillAt = new int[W][H];
-            for(int[] row : drillAt) Arrays.fill(row, -1);
-            for(int i = 0; i < drillList.size(); i++){
-                int[] d = drillList.get(i);
-                for(int x = d[0]; x < d[0] + sz(d); x++) for(int y = d[1]; y < d[1] + sz(d); y++) drillAt[x][y] = i;
-            }
-
-            int[] prev = new int[W * H], cost = new int[W * H];
-            Arrays.fill(prev, -2);
-            Arrays.fill(cost, Integer.MAX_VALUE);
-            PriorityQueue<int[]> q = new PriorityQueue<>(Comparator.comparingInt(a -> a[0]));
-            for(int i = 0; i < nodes.size(); i++) if(comp[i] == 0){
-                int id = nodes.get(i)[0] * H + nodes.get(i)[1];
-                prev[id] = -1; cost[id] = 0; q.add(new int[]{0, id});
-            }
-            int hit = -1;
-            outer:
-            while(!q.isEmpty()){
-                int[] cur = q.poll();
-                int id = cur[1], u = id / H, v = id % H;
-                if(cur[0] > cost[id]) continue;
-                for(int i = 0; i < nodes.size(); i++){
-                    if(comp[i] != 0 && nodeLink(new int[]{u, v}, nodes.get(i))){ hit = id; break outer; }
-                }
-                for(int x = Math.max(0, u - R); x <= Math.min(W - 1, u + R); x++){
-                    for(int y = Math.max(0, v - R); y <= Math.min(H - 1, v + R); y++){
-                        if(!p.nodeOk[x][y] || !reaches(u, v, x, y, 1)) continue;
-                        int step = nodeFree(x, y) ? 1 : occ[x][y] == ODRILL ? 100 : -1;
-                        if(step < 0) continue;
-                        int nid = x * H + y, nc = cur[0] + step;
-                        if(nc < cost[nid]){ cost[nid] = nc; prev[nid] = id; q.add(new int[]{nc, nid}); }
-                    }
-                }
-            }
-            if(hit < 0) return; // cannot connect; leave separate groups
-
-            Set<Integer> remove = new TreeSet<>(Collections.reverseOrder());
-            List<int[]> relays = new ArrayList<>();
-            for(int id = hit; prev[id] != -1; id = prev[id]){
-                int u = id / H, v = id % H;
-                if(drillAt[u][v] >= 0) remove.add(drillAt[u][v]);
-                relays.add(new int[]{u, v});
-            }
-            for(int i : remove){
-                int[] d = drillList.remove(i);
-                removeDrill(d);
-                fill(d[0], d[1], sz(d), FREE);
-                drillsDroppedForPower++;
-            }
-            for(int[] r : relays){ occ[r[0]][r[1]] = ONODE; nodes.add(r); }
-            snapshot("power relays", false);
-        }
-    }
-
-    int[] components(List<int[]> nodes){
-        int n = nodes.size();
-        int[] comp = new int[n];
-        Arrays.fill(comp, -1);
-        int c = 0;
-        for(int i = 0; i < n; i++){
-            if(comp[i] >= 0) continue;
-            ArrayDeque<Integer> q = new ArrayDeque<>();
-            q.add(i); comp[i] = c;
-            while(!q.isEmpty()){
-                int a = q.poll();
-                for(int b = 0; b < n; b++) if(comp[b] < 0 && nodeLink(nodes.get(a), nodes.get(b))){ comp[b] = c; q.add(b); }
-            }
-            c++;
-        }
-        return comp;
     }
 }

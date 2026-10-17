@@ -70,11 +70,11 @@ public class ServerTest{
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             existingPorts.clear();
             if(!parsePorts(job, args[2], job.outs) || !parsePorts(job, waterSpec, job.waters)){ Log.err("bad port list"); return; }
-            for(DrillFieldJob.Port pt : job.outs){
-                String err = DrillFieldJob.existingError(pt, true);
+            for(Port pt : job.outs){
+                String err = job.outKind.error(pt);
                 if(err != null){ Log.err("[abtest] @", err); return; }
             }
-            for(DrillFieldJob.Port pt : job.outs) if(!pt.edge) job.sinkReserve = 1; // room for a 3x3 vault
+            for(Port pt : job.outs) if(!pt.edge) job.sinkReserve = 1; // room for a 3x3 vault
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
             // pre-existing structures of the same team: drills on ore and short belt lines
             IntSet occupied = new IntSet();
@@ -140,7 +140,7 @@ public class ServerTest{
             // a vault (3x3) at every output: past the edge, or on the reserved interior tiles
             vaults.clear();
             for(int k = 0; k < cand.outPorts.size; k++){
-                DrillFieldJob.Port pt = cand.outPorts.get(k);
+                Port pt = cand.outPorts.get(k);
                 int[] sink = cand.sinkWorld[k];
                 if(pt.existing != null){
                     if(pt.existing.block instanceof mindustry.world.blocks.storage.StorageBlock){ vaults.add(pt.existing); continue; }
@@ -161,7 +161,7 @@ public class ServerTest{
                 Log.info("[abtest] output @ at (@,@): vault (@,@), planned @/s", k + 1, sink[0], sink[1], vx, vy, Strings.autoFixed((float)cand.loads[k], 2));
             }
             // infinite water at every water port: outside an edge port, next to an interior one
-            for(DrillFieldJob.Port pt : cand.waterPorts){
+            for(Port pt : cand.waterPorts){
                 int[] w = job.waterTile(pt);
                 Tile st = null;
                 if(pt.existing != null){
@@ -213,7 +213,7 @@ public class ServerTest{
     }
 
     /** "auto" (empty list) or comma-separated E:0.3 / @dx:dy (interior, relative to the region corner) */
-    static boolean parsePorts(DrillFieldJob job, String spec, Seq<DrillFieldJob.Port> out){
+    static boolean parsePorts(BuildJob job, String spec, Seq<Port> out){
         out.clear();
         if(spec.equalsIgnoreCase("auto")) return true;
         for(String s : spec.split(",")){
@@ -226,7 +226,7 @@ public class ServerTest{
                 Tile tile = world.tile(x, y);
                 if(b == null || tile == null) return false;
                 tile.setBlock(b, job.team, 0);
-                DrillFieldJob.Port p = DrillFieldJob.Port.at(x, y);
+                Port p = Port.at(x, y);
                 p.existing = tile.build;
                 out.add(p);
                 existingPorts.add(tile.build);
@@ -235,19 +235,19 @@ public class ServerTest{
             if(s.startsWith("@")){
                 String[] xy = s.substring(1).split(":");
                 if(xy.length != 2) return false;
-                out.add(DrillFieldJob.Port.at(job.ax + Strings.parseInt(xy[0], 0), job.ay + Strings.parseInt(xy[1], 0)));
+                out.add(Port.at(job.ax + Strings.parseInt(xy[0], 0), job.ay + Strings.parseInt(xy[1], 0)));
             }else{
                 String[] sf = s.split(":");
                 int side = "ENWS".indexOf(Character.toUpperCase(sf[0].charAt(0)));
                 if(side < 0) return false;
-                out.add(DrillFieldJob.Port.edge(side, sf.length > 1 ? Strings.parseFloat(sf[1], 0.5f) : 0.5f));
+                out.add(Port.edge(side, sf.length > 1 ? Strings.parseFloat(sf[1], 0.5f) : 0.5f));
             }
         }
         return true;
     }
 
     /** Pick the size x size window with the most ore of this item (2D prefix sums). */
-    static boolean densest(DrillFieldJob job, Item item, int size){
+    static boolean densest(BuildJob job, Item item, int size){
         int w = world.width(), h = world.height();
         size = Math.min(size, Math.min(w, h) - 6);
         int[][] ps = new int[w + 1][h + 1];
