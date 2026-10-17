@@ -26,6 +26,7 @@ import static mindustry.Vars.*;
  */
 public class ServerTest{
     static final Seq<Building> vaults = new Seq<>();
+    static final Seq<Building> existingPorts = new Seq<>();
     static int lastCount;
     static long lastTime;
     static float predicted;
@@ -67,7 +68,12 @@ public class ServerTest{
             job.mixDrills = mix;
             job.water = water; job.conduit = conduit;
             if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
+            existingPorts.clear();
             if(!parsePorts(job, args[2], job.outs) || !parsePorts(job, waterSpec, job.waters)){ Log.err("bad port list"); return; }
+            for(DrillFieldJob.Port pt : job.outs){
+                String err = DrillFieldJob.existingError(pt, true);
+                if(err != null){ Log.err("[abtest] @", err); return; }
+            }
             for(DrillFieldJob.Port pt : job.outs) if(!pt.edge) job.sinkReserve = 1; // room for a 3x3 vault
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
             // pre-existing structures of the same team: drills on ore and short belt lines
@@ -136,6 +142,17 @@ public class ServerTest{
             for(int k = 0; k < cand.outPorts.size; k++){
                 DrillFieldJob.Port pt = cand.outPorts.get(k);
                 int[] sink = cand.sinkWorld[k];
+                if(pt.existing != null){
+                    if(pt.existing.block instanceof mindustry.world.blocks.storage.StorageBlock){ vaults.add(pt.existing); continue; }
+                    // drain it into a vault on the far side (the side facing away from the region centre)
+                    int cx = (job.ax + job.bx) / 2, cy = (job.ay + job.by) / 2;
+                    int dx = Integer.signum(pt.x - cx), dy = Integer.signum(pt.y - cy);
+                    if(Math.abs(pt.x - cx) >= Math.abs(pt.y - cy)) dy = 0; else dx = 0;
+                    Tile vt = world.tile(pt.x + dx * 2, pt.y + dy * 2);
+                    if(vt != null){ vt.setBlock(Blocks.vault, job.team, 0); vaults.add(vt.build); }
+                    Log.info("[abtest] output @ into existing @ at (@,@), planned @/s", k + 1, pt.existing.block.name, pt.x, pt.y, Strings.autoFixed((float)cand.loads[k], 2));
+                    continue;
+                }
                 int vx = sink[0] + (pt.edge ? Geometry.d4x(pt.side) : 0), vy = sink[1] + (pt.edge ? Geometry.d4y(pt.side) : 0);
                 Tile vt = world.tile(vx, vy);
                 if(vt == null){ Log.err("no room for vault @", k + 1); continue; }
@@ -147,7 +164,14 @@ public class ServerTest{
             for(DrillFieldJob.Port pt : cand.waterPorts){
                 int[] w = job.waterTile(pt);
                 Tile st = null;
-                if(pt.edge) st = world.tile(w[0] + Geometry.d4x(pt.side), w[1] + Geometry.d4y(pt.side));
+                if(pt.existing != null){
+                    // feed the existing water block from its far side
+                    int cx = (job.ax + job.bx) / 2, cy = (job.ay + job.by) / 2;
+                    int dx = Integer.signum(pt.x - cx), dy = Integer.signum(pt.y - cy);
+                    if(Math.abs(pt.x - cx) >= Math.abs(pt.y - cy)) dy = 0; else dx = 0;
+                    st = world.tile(pt.x + dx, pt.y + dy);
+                    if(st != null && st.build != null) st = null;
+                }else if(pt.edge) st = world.tile(w[0] + Geometry.d4x(pt.side), w[1] + Geometry.d4y(pt.side));
                 else for(int d = 0; d < 4 && st == null; d++){
                     Tile n = world.tile(w[0] + Geometry.d4x(d), w[1] + Geometry.d4y(d));
                     if(n != null && n.build == null && !n.solid()) st = n;
@@ -193,6 +217,21 @@ public class ServerTest{
         out.clear();
         if(spec.equalsIgnoreCase("auto")) return true;
         for(String s : spec.split(",")){
+            if(s.startsWith("#")){
+                // #BLOCK@dx:dy: build that block first and use it as an existing port
+                String[] bp = s.substring(1).split("@");
+                String[] xy = bp[1].split(":");
+                Block b = content.block(bp[0]);
+                int x = job.ax + Strings.parseInt(xy[0], 0), y = job.ay + Strings.parseInt(xy[1], 0);
+                Tile tile = world.tile(x, y);
+                if(b == null || tile == null) return false;
+                tile.setBlock(b, job.team, 0);
+                DrillFieldJob.Port p = DrillFieldJob.Port.at(x, y);
+                p.existing = tile.build;
+                out.add(p);
+                existingPorts.add(tile.build);
+                continue;
+            }
             if(s.startsWith("@")){
                 String[] xy = s.substring(1).split(":");
                 if(xy.length != 2) return false;

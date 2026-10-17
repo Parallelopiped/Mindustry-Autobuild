@@ -7,6 +7,22 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-17
+### Added
+- **Keeps other ores free**: belts, bridges, water and power nodes avoid tiles with other valuable
+  ores (not the target, not low-priority sand), and drills are valued lower when they cover other
+  ore. Over 120 mixed-ore fields: other ore covered 4.4% -> 2.9% (dry) and 9.1% -> 4.7% (water),
+  same output.
+- **Ports on existing buildings**: click one of your belts, routers, bridges, junctions, cores or
+  containers as an item output (items are delivered into it; a drill touching it delivers directly),
+  or a liquid router / tank / conduit / pump as a water input (used as a source, not rebuilt).
+  Incompatible blocks are refused with a reason (e.g. "Mender can't take items").
+- Server test: `#BLOCK@dx:dy` ports build that block first and use it as an existing port.
+
+### Fixed
+- Next to an existing router-like output, only a belt pointing into it is placed (its own items
+  can't get into our lines); a conveyor's front and a bridge's link side are never used to deliver.
+
 ## [0.9.1] - 2026-10-17
 ### Fixed
 - Plans were drawn over existing structures (red overlaps in the preview): `Build.validPlace` also
@@ -182,6 +198,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.10.0]: #
 [0.9.1]: #
 [0.9.0]: #
 [0.8.1]: #

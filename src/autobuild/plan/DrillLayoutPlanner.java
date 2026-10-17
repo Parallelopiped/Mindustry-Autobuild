@@ -30,6 +30,8 @@ public class DrillLayoutPlanner{
     public enum Family{ AUTO, LANES, LATTICE, WATER_ROWS, DRILL_FIRST }
 
     public static final int DRILL = 0, BELT = 1, NODE = 2, BRIDGE = 3, CONDUIT = 4, LROUTER = 5, LBRIDGE = 6;
+    /** an existing water source (not ours, not built): dir holds a mask of the directions it outputs to */
+    static final int EXISTING_WATER = 7;
     static final int[] DU = {1, 0, -1, 0}, DV = {0, 1, 0, -1};
 
     // occupancy codes; >= 0 is a routed belt with that direction
@@ -105,6 +107,14 @@ public class DrillLayoutPlanner{
         public int[][] waterPorts;
         /** existing (not ours) buildings that take items: an end bridge must not dump into them */
         public boolean[][] foreignAcceptor;
+        /** tiles with other valuable ore (not the target, not low priority): keep free for later mining. Null: from drop */
+        public boolean[][] otherOre;
+        /** optional per sink: tiles it covers {u0, v0, u1, v1} (an existing building: deliver into any of them) */
+        public int[][] sinkRects;
+        /** tiles next to an existing output building: a belt there may only point into the output */
+        public boolean[][] approachOnly;
+        /** existing water sources: tiles {u, v, dirMask} (they are not built; they output where the mask says) */
+        public int[][] waterSources;
 
         public Params copy(){
             Params q = new Params();
@@ -116,7 +126,8 @@ public class DrillLayoutPlanner{
             q.variant = variant;
             q.typeSize = typeSize; q.typeRate = typeRate; q.typePowered = typePowered; q.typeDrop = typeDrop; q.typeDrillOk = typeDrillOk;
             q.family = family;
-            q.foreignAcceptor = foreignAcceptor;
+            q.foreignAcceptor = foreignAcceptor; q.otherOre = otherOre;
+            q.sinkRects = sinkRects; q.approachOnly = approachOnly; q.waterSources = waterSources;
             q.sinks = sinks; q.sinkReserve = sinkReserve; q.sinkCapacity = sinkCapacity; q.itemsPerOre = itemsPerOre; q.waterPorts = waterPorts;
             return q;
         }
@@ -162,6 +173,8 @@ public class DrillLayoutPlanner{
 
     // ---- work state ----
     int[][] occ;
+    /** other ore under a tile (see Params.otherOre) */
+    final boolean[][] otherOre;
     /** direction of the link of every routed, linked item bridge (a merge target); -1 elsewhere */
     int[][] bridgeLink;
     /** tiles strictly between the ends of a placed bridge link (item or liquid): a corridor already in use */
@@ -191,9 +204,19 @@ public class DrillLayoutPlanner{
     public int waterU = -1, waterV = -1;
     /** every water port (liquid routers fed from outside) */
     public List<int[]> waterPortList = new ArrayList<>();
+    /** existing water sources registered as (unbuilt) water elements */
+    final List<int[]> existingWater = new ArrayList<>();
 
     public DrillLayoutPlanner(Params p){
         this.p = p; this.W = p.W; this.H = p.H; this.s = p.drillSize;
+        if(p.otherOre != null) otherOre = p.otherOre;
+        else{
+            otherOre = new boolean[W][H];
+            for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
+                int d = p.drop[u][v];
+                otherOre[u][v] = d >= 0 && d != p.target && (p.lowPriority == null || !p.lowPriority[d]);
+            }
+        }
         if(p.typeSize == null){
             T = 1; sz = new int[]{p.drillSize}; rate = new double[]{1}; powered = new boolean[]{p.power};
             tDrop = new int[][][]{p.drop}; tOk = new boolean[][][]{p.drillOk};
@@ -370,6 +393,8 @@ public class DrillLayoutPlanner{
         score = 0;
         for(Feeder f : feeders) for(int[] d : f.drills) score += drillValue(d);
         score -= beltCost() * belts + bridgeCost() * bridges + waterTileCost() * waterTiles + nodeCost() * nodes;
+        // other ore under non-drill blocks (drills already pay for theirs in drillValue)
+        for(Place pl : places) if(pl.kind != DRILL && otherOre[pl.u][pl.v]) score -= oreTileValue();
         // output that would back up is lost, and the drills producing it are wasted
         if(capacityOn()) for(double load : sinkLoad) score -= 1.5 * Math.max(0, load - p.sinkCapacity) / p.itemsPerOre;
         snapshot("done", true);
@@ -398,6 +423,9 @@ public class DrillLayoutPlanner{
                 boolean takes = occ[x][y] >= 0 // its front is never inside a free footprint
                     || (bridgeLink[x][y] >= 0 && bridgeLink[x][y] != a[2]);
                 if(takes && fits(sinkOf[x][y], flow, true)) return sinkOf[x][y];
+                // an existing output building right next to the drill takes its items directly
+                int sk = occ[x][y] == OSINK ? sinkAt(x, y) : -1;
+                if(sk >= 0 && p.sinkRects != null && sk < p.sinkRects.length && p.sinkRects[sk] != null && fits(sk, flow, true)) return sk;
             }
         }
         return -1;
@@ -579,7 +607,8 @@ public class DrillLayoutPlanner{
      * liquid A* from the water network to a free tile next to it, where a router goes.
      */
     void waterByDrill(){
-        boolean any = false;
+        addExistingWater();
+        boolean any = !existingWater.isEmpty();
         for(int[] wp : waterPortList){
             if(waterAt.containsKey(key(wp[0], wp[1])) || occ[wp[0]][wp[1]] != FREE) continue;
             placeWater(new int[]{wp[0], wp[1], LROUTER, 0, wp[0], wp[1]});
@@ -657,7 +686,7 @@ public class DrillLayoutPlanner{
     List<Place> build(){
         List<Place> out = new ArrayList<>();
         for(int[] n : nodeList) out.add(new Place(NODE, n[0], n[1], 0, 0));
-        for(int[] e : water) out.add(new Place(e[2], e[0], e[1], e[3], 0, e[4], e[5]));
+        for(int[] e : water) if(e[2] != EXISTING_WATER) out.add(new Place(e[2], e[0], e[1], e[3], 0, e[4], e[5]));
         for(Feeder f : feeders){
             for(int[] b : f.belts) out.add(new Place(BELT, b[0], b[1], 0, 0));
             for(int i = 0; i < f.bridges.size(); i++){
@@ -701,11 +730,18 @@ public class DrillLayoutPlanner{
     int sinkAt(int x, int y){
         // the reserved area around an interior output is the player's block: delivering into any of it counts
         for(int k = 0; k < sinkList.size(); k++){
-            int[] s0 = sinkList.get(k);
-            int r = reserveOf(s0);
-            if(Math.abs(s0[0] - x) <= r && Math.abs(s0[1] - y) <= r) return k;
+            int[] r = sinkRect(k);
+            if(x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]) return k;
         }
         return -1;
+    }
+
+    /** tiles sink k covers: its rect if given (existing building), else the tile +- reserve (interior) */
+    int[] sinkRect(int k){
+        if(p.sinkRects != null && k < p.sinkRects.length && p.sinkRects[k] != null) return p.sinkRects[k];
+        int[] s0 = sinkList.get(k);
+        int r = reserveOf(s0);
+        return new int[]{s0[0] - r, s0[1] - r, s0[0] + r, s0[1] + r};
     }
 
     /** only an interior output keeps tiles free around it; an edge output's tile lies outside the region */
@@ -733,9 +769,9 @@ public class DrillLayoutPlanner{
             for(int[] s0 : p.sinks) sinkList.add(new int[]{s0[0], s0[1]});
             port = sinkList.get(0)[1];
         }
-        for(int[] s0 : sinkList){
-            int r = reserveOf(s0);
-            for(int x = s0[0] - r; x <= s0[0] + r; x++) for(int y = s0[1] - r; y <= s0[1] + r; y++){
+        for(int k = 0; k < sinkList.size(); k++){
+            int[] r = sinkRect(k);
+            for(int x = r[0]; x <= r[2]; x++) for(int y = r[1]; y <= r[3]; y++){
                 if(x >= 0 && y >= 0 && x < W && y < H) mask[x][y] = true;
             }
         }
@@ -743,9 +779,9 @@ public class DrillLayoutPlanner{
     }
 
     void markSinks(){
-        for(int[] s0 : sinkList){
-            int r = reserveOf(s0);
-            for(int x = s0[0] - r; x <= s0[0] + r; x++) for(int y = s0[1] - r; y <= s0[1] + r; y++){
+        for(int k = 0; k < sinkList.size(); k++){
+            int[] r = sinkRect(k);
+            for(int x = r[0]; x <= r[2]; x++) for(int y = r[1]; y <= r[3]; y++){
                 if(x >= 0 && y >= 0 && x < W && y < H) occ[x][y] = OSINK;
             }
         }
@@ -811,7 +847,7 @@ public class DrillLayoutPlanner{
         int o = ore[ty][u][v];
         if(o == 0 || masked(u, v, st)) return 0;
         // efficiency: a drill must sit mostly on ore to be worth its cost
-        double val = p.mode == Mode.OUTPUT ? o * rate[ty] - 0.01 : o * rate[ty] - 0.5 * st * st;
+        double val = (p.mode == Mode.OUTPUT ? o * rate[ty] - 0.01 : o * rate[ty] - 0.5 * st * st) - oreTileValue() * otherOreUnder(u, v, st);
         return val > 0 ? val * noiseAt(u, v) : val;
     }
 
@@ -836,19 +872,26 @@ public class DrillLayoutPlanner{
         double base = drillValue(ty, u, v);
         if(!wet || base <= 0) return base;
         int o = ore[ty][u][v], st = sz[ty];
-        return (p.mode == Mode.OUTPUT ? o * rate[ty] * p.waterBoost - 0.01 : o * rate[ty] * p.waterBoost - 0.5 * st * st - 0.5) * noiseAt(u, v);
+        double val = (p.mode == Mode.OUTPUT ? o * rate[ty] * p.waterBoost - 0.01 : o * rate[ty] * p.waterBoost - 0.5 * st * st - 0.5)
+            - oreTileValue() * otherOreUnder(u, v, st);
+        return val * noiseAt(u, v);
     }
 
     double drillValue(int[] d){ return drillValue(type(d), d[0], d[1], wet(d)); }
 
     /** Water row tile can carry a conduit/router. */
     boolean waterTileOk(int x, int r){
-        return r >= 0 && r < H && x >= 0 && x < W - 1 && p.beltOk[x][r] && !mask[x][r];
+        return r >= 0 && r < H && x >= 0 && x < W - 1 && p.beltOk[x][r] && !mask[x][r] && !approach(x, r);
     }
 
     /** Lane belt tile usable by the layout. */
     boolean laneOk(int u, int v){
-        return p.beltOk[u][v] && !mask[u][v];
+        return p.beltOk[u][v] && !mask[u][v] && !approach(u, v);
+    }
+
+    /** next to an existing output building: only a routed belt pointing into it may stand there */
+    boolean approach(int u, int v){
+        return p.approachOnly != null && p.approachOnly[u][v];
     }
 
     /**
@@ -995,8 +1038,9 @@ public class DrillLayoutPlanner{
         int minU = g.su, maxU = g.sv;
         for(int u = minU; u < maxU; u++) g.belts.add(new int[]{u, v});
         g.su = maxU; g.sv = v; g.landed = false;
-        // belt span, plus roughly what connecting it costs
+        // belt span, plus roughly what connecting it costs, plus other ore the belt covers
         g.value -= beltCost() * (maxU - minU + 1 + 2);
+        for(int u = minU; u <= maxU; u++) if(otherOre[u][v]) g.value -= oreTileValue();
         if(g.value > 0) out.add(g);
     }
 
@@ -1071,6 +1115,18 @@ public class DrillLayoutPlanner{
     /** Port tile on the chosen edge, spine along column 0, feed row along the top/bottom edge. */
     boolean setupWater(){
         waterPortList = new ArrayList<>();
+        existingWater.clear();
+        if(p.waterSources != null){
+            for(int[] ws : p.waterSources){
+                if(ws[0] < 0 || ws[1] < 0 || ws[0] >= W || ws[1] >= H) continue;
+                existingWater.add(new int[]{ws[0], ws[1], EXISTING_WATER, ws[2], ws[0], ws[1]});
+                mask[ws[0]][ws[1]] = true;
+            }
+            if(p.waterPorts == null && !existingWater.isEmpty()){
+                waterU = existingWater.get(0)[0]; waterV = existingWater.get(0)[1];
+                return true;
+            }
+        }
         if(p.waterPorts != null){
             // explicit ports (edge or interior); the corridor is reserved only for an edge port
             for(int[] wp : p.waterPorts){
@@ -1117,9 +1173,17 @@ public class DrillLayoutPlanner{
      * next to its drills (interval stabbing). Unbuildable gaps are jumped with bridge conduits.
      * Drills without a router (or bridge end) next to them lose their wet flag.
      */
+    void addExistingWater(){
+        for(int[] e : existingWater){
+            if(waterAt.containsKey(key(e[0], e[1]))) continue;
+            water.add(e); waterAt.put(key(e[0], e[1]), e); occ[e[0]][e[1]] = OWATER;
+        }
+    }
+
     void buildWater(){
         water.clear();
         waterAt.clear();
+        addExistingWater();
         underLink = new boolean[W][H];
         List<int[]> wetList = new ArrayList<>();
         for(Feeder f : feeders) for(int[] d : f.drills) if(wet(d)) wetList.add(d);
@@ -1140,6 +1204,7 @@ public class DrillLayoutPlanner{
         }
 
         if(!routers.isEmpty()){
+            addExistingWater();
             for(int[] wp : waterPortList){
                 if(occ[wp[0]][wp[1]] != FREE) continue;
                 int[] port = {wp[0], wp[1], LROUTER, 0, wp[0], wp[1]};
@@ -1339,11 +1404,11 @@ public class DrillLayoutPlanner{
 
     boolean liquidFree(int u, int v){
         // column W-1 stays free for the item collector
-        return u >= 0 && v >= 0 && u < W - 1 && v < H && p.beltOk[u][v] && occ[u][v] == FREE;
+        return u >= 0 && v >= 0 && u < W - 1 && v < H && p.beltOk[u][v] && occ[u][v] == FREE && !approach(u, v);
     }
 
     /** the reserved corridor is cheaper, so legs follow it unless it's blocked */
-    float stepCost(int u, int v){ return Math.min(mask[u][v] ? 0.5f : 1f, tileCost(u, v)); }
+    float stepCost(int u, int v){ return Math.min(mask[u][v] ? 0.5f : 1f, underLink != null && underLink[u][v] ? 0.35f : 1f) + (otherOre[u][v] ? oreRoutePenalty : 0f); }
 
     void relax(PriorityQueue<float[]> open, float[] cost, int[] prev, int from, int to, float nc, float h){
         if(nc < cost[to]){
@@ -1380,11 +1445,12 @@ public class DrillLayoutPlanner{
         int[] e = waterAt.get(k);
         if(e == null) return false;
         if(e[2] == LROUTER) return true;
+        if(e[2] == EXISTING_WATER) return ((e[3] >> dir) & 1) != 0;
         return e[2] == LBRIDGE && e[4] == e[0] && e[5] == e[1] && dir != (e[3] + 2) % 4;
     }
 
     boolean waterPlaceable(int u, int v){
-        return u >= 0 && v >= 0 && u < W - 1 && v < H && p.beltOk[u][v] && occ[u][v] == FREE;
+        return u >= 0 && v >= 0 && u < W - 1 && v < H && p.beltOk[u][v] && occ[u][v] == FREE && !approach(u, v);
     }
 
     static long key(int u, int v){ return ((long)u << 32) | (v & 0xffffffffL); }
@@ -1595,6 +1661,7 @@ public class DrillLayoutPlanner{
                         for(int i = gLo; i < end; i++) f.bridges.add(ch.get(i));
                         f.su = ch.get(end)[0]; f.sv = ch.get(end)[1]; f.landed = true;
                         f.value = gVal - bridgeCost() * (end - gLo + 1);
+                        for(int i = gLo; i <= end; i++) if(otherOre[ch.get(i)[0]][ch.get(i)[1]]) f.value -= oreTileValue();
                         if(f.value > 0) out.add(f);
                         gLo = -1; gFlow = 0; gVal = 0; gDrills = new ArrayList<>();
                     }
@@ -1774,7 +1841,19 @@ public class DrillLayoutPlanner{
      * corridor already in use, so bridges of the other kind can interleave there cheaply.
      */
     float tileCost(int u, int v){
-        return underLink != null && underLink[u][v] ? 0.35f : 1f;
+        return (underLink != null && underLink[u][v] ? 0.35f : 1f) + (otherOre[u][v] ? oreRoutePenalty : 0f);
+    }
+
+    /** extra routing cost (tiles) for covering another ore: such tiles are kept for later mining */
+    static final float oreRoutePenalty = 1.2f;
+
+    /** value lost per tile of other ore covered by a drill / belt / bridge (ore tiles of output) */
+    double oreTileValue(){ return p.mode == Mode.OUTPUT ? 0.3 : 0.4; }
+
+    int otherOreUnder(int u, int v, int st){
+        int n = 0;
+        for(int x = u; x < u + st; x++) for(int y = v; y < v + st; y++) if(otherOre[x][y]) n++;
+        return n;
     }
 
     /** free side tiles an end bridge at (u,v) would reserve as buffer */
@@ -1849,8 +1928,11 @@ public class DrillLayoutPlanner{
             float c = cost[id];
             if(cur[0] - h(u, v) > c + 1e-3f) continue; // stale
             double flow = startFlows[origin[id]];
+            boolean approach = p.approachOnly != null && p.approachOnly[u][v];
             for(int nd = 0; nd < 4; nd++){
                 if(nd == (d + 2) % 4) continue;
+                // next to an existing output building: only a belt pointing into it may stand here
+                if(approach && (L == 1 || sinkAt(u + DU[nd], v + DV[nd]) < 0)) continue;
                 float turn = nd != d ? turnCost : 0f;
                 // conveyor step (from a landed bridge this makes it an end bridge)
                 int nu = u + DU[nd], nv = v + DV[nd];
@@ -1883,7 +1965,7 @@ public class DrillLayoutPlanner{
                         last[2] = BRIDGE; last[3] = nd; last[4] = ju; last[5] = jv;
                         return pth;
                     }
-                    if(occ[ju][jv] != FREE || !p.beltOk[ju][jv]) continue;
+                    if(occ[ju][jv] != FREE || !p.beltOk[ju][jv] || (p.approachOnly != null && p.approachOnly[ju][jv])) continue;
                     push(open, cost, prev, id, sid(ju, jv, nd, 1), c + jumpCost() - 1f + tileCost(ju, jv) + 0.05f * k + turn, ju, jv);
                 }
             }
@@ -1972,7 +2054,7 @@ public class DrillLayoutPlanner{
                     }
                     if(c == 0) continue;
                     // most drills covered; ties go to the node closest to them
-                    double score = Math.min(c, cap) * 1000 - dist / c;
+                    double score = Math.min(c, cap) * 1000 - dist / c - (otherOre[u][v] ? 200 : 0);
                     if(score > best){ best = score; bu = u; bv = v; }
                 }
                 if(bu < 0) break;

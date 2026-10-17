@@ -22,6 +22,7 @@ public class PlannerTest{
         fails += oreRule();
         fails += waterAroundWall();
         fails += outputsAndCapacity();
+        fails += existingPorts();
         mixGain();
         logisticsEfficiency();
         compare();
@@ -217,7 +218,10 @@ public class PlannerTest{
                             int ds = pl.size;
                             int[][] adj = {{pl.u + ds, pl.v + i, 2}, {pl.u - 1, pl.v + i, 0}, {pl.u + i, pl.v + ds, 3}, {pl.u + i, pl.v - 1, 1}};
                             // {x, y, face of the target that looks at the drill}
-                            for(int[] a : adj) addIfAccepts(m, ent, ents, out, id, a[0], a[1], a[2], s);
+                            for(int[] a : adj){
+                                if(isSink(p, a[0], a[1]) && rects != null){ if(!out.get(id).contains(SINK)) out.get(id).add(SINK); continue; } // drill delivers into an existing output building
+                                addIfAccepts(m, ent, ents, out, id, a[0], a[1], a[2], s);
+                            }
                         }
                         break;
                     case DrillLayoutPlanner.BELT: {
@@ -281,10 +285,16 @@ public class PlannerTest{
         }
 
         static int reserve, mapW, mapH;
+        static int[][] rects, sources;
         static int widthOf(DrillLayoutPlanner p){ return mapW; }
         static int heightOf(DrillLayoutPlanner p){ return mapH; }
         static boolean isSink(DrillLayoutPlanner p, int x, int y){
-            for(int[] s0 : p.sinkList){
+            for(int k = 0; k < p.sinkList.size(); k++){
+                int[] s0 = p.sinkList.get(k);
+                if(rects != null && k < rects.length && rects[k] != null){
+                    if(x >= rects[k][0] && x <= rects[k][2] && y >= rects[k][1] && y <= rects[k][3]) return true;
+                    continue;
+                }
                 boolean inside = s0[0] >= 0 && s0[1] >= 0 && s0[0] < widthOf(p) && s0[1] < heightOf(p);
                 int r = inside ? reserve : 0;
                 if(Math.abs(s0[0] - x) <= r && Math.abs(s0[1] - y) <= r) return true;
@@ -302,6 +312,21 @@ public class PlannerTest{
                 int start = ent[wp[0]][wp[1]];
                 if(start == 0 || ents.get(start).kind != DrillLayoutPlanner.LROUTER) continue;
                 if(!seen[start]){ seen[start] = true; q.add(start); }
+            }
+            // existing sources (not placed by the plan) feed their neighbours in the directions of their mask
+            if(sources != null) for(int[] src : sources){
+                for(int d = 0; d < 4; d++){
+                    if(((src[2] >> d) & 1) == 0) continue;
+                    int x = src[0] + DU[d], y = src[1] + DV[d];
+                    if(x < 0 || y < 0 || x >= m.W || y >= m.H) continue;
+                    int e = ent[x][y];
+                    if(e == 0 || seen[e]) continue;
+                    Place tp = ents.get(e);
+                    boolean ok = tp.kind == DrillLayoutPlanner.LROUTER || tp.kind == DrillLayoutPlanner.DRILL
+                        || (tp.kind == DrillLayoutPlanner.CONDUIT && tp.dir != (d + 2) % 4 && tp.dir != d ? true : tp.kind == DrillLayoutPlanner.CONDUIT && tp.dir == d)
+                        || (tp.kind == DrillLayoutPlanner.LBRIDGE && !(tp.lu == tp.u && tp.lv == tp.v));
+                    if(ok){ seen[e] = true; q.add(e); }
+                }
             }
             if(q.isEmpty()) return "noWaterPort ";
             while(!q.isEmpty()){
@@ -600,6 +625,51 @@ public class PlannerTest{
                 if(!errs.isEmpty() || !capOk) bad++;
                 if(System.getProperty("showout") != null && Integer.getInteger("showout") == si * 2 + water) print(m, 2, p);
             }
+        }
+        return bad;
+    }
+
+    /**
+     * Outputs on existing buildings (a 1x1 router with approach-only neighbours, a 3x3 container)
+     * and water from an existing liquid router: every drill reaches an output, nothing is built on
+     * them, wet drills get water from the existing source.
+     */
+    static int existingPorts(){
+        int bad = 0;
+        Map m = new Map();
+        int W = m.W = 40, H = m.H = 30;
+        m.belt = new boolean[W][H]; m.drop = new int[W][H];
+        Random r = new Random(5);
+        for(int x = 0; x < W; x++) for(int y = 0; y < H; y++){
+            m.belt[x][y] = true;
+            double d = Math.hypot((x - 18) / 1.6, y - 15) + 3 * Math.sin(x * 0.7) + 2 * Math.cos(y * 0.9);
+            m.drop[x][y] = d < 11 && r.nextFloat() < 0.9 ? 1 : -1;
+        }
+        // existing buildings: router at (35,15), container (3x3) at (2..4, 26..28), liquid router at (1,1)
+        int[][] existing = {{35, 15}, {2, 26}, {3, 26}, {4, 26}, {2, 27}, {3, 27}, {4, 27}, {2, 28}, {3, 28}, {4, 28}, {1, 1}};
+        for(int[] e : existing){ m.belt[e[0]][e[1]] = false; m.drop[e[0]][e[1]] = -1; }
+        m.drill = drillOk(m, 2);
+        for(int water = 0; water < 2; water++){
+            Params pa = params(m, 2, Mode.OUTPUT, false, true, 0, 0);
+            pa.sinks = new int[][]{{35, 15}, {3, 27}};
+            pa.sinkRects = new int[][]{{35, 15, 35, 15}, {2, 26, 4, 28}};
+            pa.approachOnly = new boolean[W][H];
+            for(int d = 0; d < 4; d++) pa.approachOnly[35 + DU[d]][15 + DV[d]] = true; // the router pushes into its neighbours
+            pa.itemsPerOre = 1f; pa.sinkCapacity = water == 1 ? 2000f : 200f; // with water: no capacity limit, so water pays off
+            if(water == 1){ pa.water = true; pa.waterSources = new int[][]{{1, 1, 15}}; }
+            DrillLayoutPlanner p = new DrillLayoutPlanner(pa);
+            boolean ok = p.plan();
+            FlowCheck.rects = pa.sinkRects; FlowCheck.sources = pa.waterSources;
+            String errs = ok ? FlowCheck.check(m, 2, p, false) : "plan failed: " + p.failure;
+            FlowCheck.rects = null; FlowCheck.sources = null;
+            // approach tiles: only belts pointing into the router
+            for(Place pl : p.places){
+                if(pa.approachOnly[pl.u][pl.v] && !(pl.kind == DrillLayoutPlanner.BELT && pl.u + DU[pl.dir] == 35 && pl.v + DV[pl.dir] == 15)
+                    && pl.kind != DrillLayoutPlanner.DRILL) errs += "onApproach@" + pl + " ";
+            }
+            System.out.printf("existing ports%s: %s drills=%d wet=%d loads=%s %s%n", water == 1 ? " +water" : "", p.layout, p.drills, p.wetDrills,
+                Arrays.toString(Arrays.stream(p.sinkLoad).mapToLong(Math::round).toArray()), errs.isEmpty() ? "" : "ERR " + errs);
+            if(!errs.isEmpty() || p.drills == 0 || (water == 1 && p.wetDrills == 0)) bad++;
         }
         return bad;
     }

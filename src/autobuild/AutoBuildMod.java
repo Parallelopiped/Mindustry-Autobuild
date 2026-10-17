@@ -208,7 +208,7 @@ public class AutoBuildMod extends Mod{
                 else if(Core.input.keyTap(KeyCode.mouseRight)){ if(picks().isEmpty()) autoKind(); else finishKind(); }
                 else if(Core.input.keyTap(KeyCode.mouseLeft) && !Core.scene.hasMouse() && hover != null){
                     if(hoverValid) addPick(hover);
-                    else ui.showInfoToast("[scarlet]That tile is already a port", 2f);
+                    else ui.showInfoToast("[scarlet]" + hoverReason(), 2f);
                 }
                 break;
             case playback:
@@ -231,8 +231,14 @@ public class AutoBuildMod extends Mod{
         return p.edge ? job.edgeTile(p.side, p.frac) : new int[]{p.x, p.y};
     }
 
-    /** one port per tile */
+    String hoverReason(){
+        String e = hover == null ? null : DrillFieldJob.existingError(hover, pickKind == portOutput);
+        return e != null ? e : "That tile is already a port";
+    }
+
+    /** one port per tile; an existing building must be able to take items / give water */
     boolean portAllowed(DrillFieldJob.Port p){
+        if(DrillFieldJob.existingError(p, pickKind == portOutput) != null) return false;
         int[] t = markerTile(pickKind, p);
         for(int kind = 0; kind < 2; kind++){
             for(DrillFieldJob.Port o : kind == portOutput ? job.outs : job.waters){
@@ -522,6 +528,11 @@ public class AutoBuildMod extends Mod{
             if(kind == portOutput) arrow(px + ox * 0.5f, py + oy * 0.5f, ang);
             else arrow(px + ox * 1.5f, py + oy * 1.5f, ang);
             lx = px + ox * 3f; ly = py + oy * 3f + (p.side % 2 == 0 ? tilesize : 0f);
+        }else if(p.existing != null){
+            // an existing building: frame it whole
+            float off = (p.existing.block.size % 2 == 0) ? tilesize / 2f : 0f;
+            Lines.square(px + off, py + off, p.existing.block.size * tilesize / 2f + 2f);
+            ly = py + (p.existing.block.size + 2) * tilesize / 2f;
         }else{
             Lines.square(px, py, tilesize / 2f + 3f, 45f);
         }
@@ -561,7 +572,9 @@ public class AutoBuildMod extends Mod{
                 for(int i = 0; i < job.outs.size; i++) port(portOutput, job.outs.get(i), portNames[portOutput] + " " + (i + 1), true);
                 for(int i = 0; i < job.waters.size; i++) port(portWater, job.waters.get(i), portNames[portWater] + " " + (i + 1), true);
                 if(hover != null){
-                    port(pickKind, hover, hoverValid ? portNames[pickKind] + (hover.edge ? " (edge)?" : " here?") : "already a port", hoverValid);
+                    String what = hover.existing != null ? (pickKind == portOutput ? " into " : " from ") + hover.existing.block.localizedName + "?"
+                        : hover.edge ? " (edge)?" : " here?";
+                    port(pickKind, hover, hoverValid ? portNames[pickKind] + what : hoverReason(), hoverValid);
                 }
                 break;
             }

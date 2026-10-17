@@ -11,7 +11,9 @@ import mindustry.entities.units.*;
 import mindustry.game.*;
 import mindustry.type.*;
 import mindustry.world.*;
+import mindustry.gen.*;
 import mindustry.world.blocks.distribution.*;
+import mindustry.world.blocks.liquid.*;
 import mindustry.world.blocks.power.*;
 import mindustry.world.blocks.production.*;
 import mindustry.world.blocks.storage.*;
@@ -65,19 +67,49 @@ public class DrillFieldJob{
         public int side;
         public float frac;
         public int x, y;
+        /** an existing building (x,y = its tile): items are delivered into it / water comes from it */
+        public Building existing;
 
         public static Port edge(int side, float frac){ Port p = new Port(); p.edge = true; p.side = side; p.frac = frac; return p; }
 
         public static Port at(int x, int y){ Port p = new Port(); p.x = x; p.y = y; return p; }
 
-        public String name(){ return edge ? dirNames[side] : "(" + x + "," + y + ")"; }
+        public String name(){ return existing != null ? existing.block.localizedName : edge ? dirNames[side] : "(" + x + "," + y + ")"; }
     }
 
-    /** a click: inside the region (a tile away from its border) = interior port, otherwise snapped to the nearest edge */
+    /**
+     * A click on one of our buildings: that building (if it can take items / give water, see
+     * existingError). Inside the region (a tile away from its border): interior port. Otherwise
+     * snapped to the nearest edge.
+     */
     public Port classify(int tx, int ty){
+        Tile t = world.tile(tx, ty);
+        if(t != null && t.build != null && t.build.team == team){
+            Port p = Port.at(t.build.tile.x, t.build.tile.y);
+            p.existing = t.build;
+            return p;
+        }
         if(tx > ax && tx < bx && ty > ay && ty < by) return Port.at(tx, ty);
         float[] s = snap(tx, ty);
         return Port.edge((int)s[0], s[1]);
+    }
+
+    /** why an existing building can't be this kind of port, or null */
+    public static String existingError(Port p, boolean output){
+        if(p.existing == null) return null;
+        Block b = p.existing.block;
+        if(output){
+            if(!b.acceptsItems || !b.hasItems) return b.localizedName + " can't take items";
+            if(b instanceof ItemBridge ib && !(b instanceof LiquidBridge) && !bridgeLinked(ib, p.existing))
+                return "an unlinked " + b.localizedName + " only takes items from other bridges";
+            return null;
+        }
+        if(!b.hasLiquids || !b.outputsLiquid) return b.localizedName + " doesn't give out liquid";
+        return null;
+    }
+
+    static boolean bridgeLinked(ItemBridge ib, Building b){
+        return ib.linkValid(b.tile, world.tile(((ItemBridge.ItemBridgeBuild)b).link));
     }
 
     /** world tile the planner delivers items into for an output port */
@@ -213,6 +245,10 @@ public class DrillFieldJob{
         boolean[][] belt, node;
         /** an existing building that takes items stands here */
         boolean[][] acceptor;
+        /** next to an existing output building that pushes items to its neighbours (router...) */
+        boolean[][] approach;
+        /** another valuable ore lies here (kept free for later mining) */
+        boolean[][] otherOre;
         /** drill types: 0 = the chosen drill, then smaller fillers (one per size) */
         Drill[] types;
         double[] rate;
@@ -253,7 +289,10 @@ public class DrillFieldJob{
             sn.liquidRange = available(Blocks.bridgeConduit) ? ((ItemBridge)Blocks.bridgeConduit).range : 0;
         }
         int T = sn.types.length;
-        sn.belt = new boolean[sn.rw][sn.rh]; sn.node = new boolean[sn.rw][sn.rh]; sn.acceptor = new boolean[sn.rw][sn.rh]; sn.drillMin = new boolean[T][sn.rw][sn.rh]; sn.drop = new int[T][sn.rw][sn.rh];
+        sn.belt = new boolean[sn.rw][sn.rh]; sn.node = new boolean[sn.rw][sn.rh]; sn.acceptor = new boolean[sn.rw][sn.rh]; sn.approach = new boolean[sn.rw][sn.rh];
+        sn.otherOre = new boolean[sn.rw][sn.rh];
+        outputBuildings.clear();
+        for(Port p : outs) if(p.existing != null) outputBuildings.add(p.existing); sn.drillMin = new boolean[T][sn.rw][sn.rh]; sn.drop = new int[T][sn.rw][sn.rh];
         sn.low = new boolean[content.items().size];
         for(Item i : content.items()) sn.low[i.id] = i.lowPriority;
         for(int rx = 0; rx < sn.rw; rx++) for(int ry = 0; ry < sn.rh; ry++){
@@ -261,7 +300,11 @@ public class DrillFieldJob{
             boolean empty = empty(x, y);
             Tile at = world.tile(x, y);
             sn.acceptor[rx][ry] = at != null && at.build != null && at.block().hasItems && at.block().acceptsItems && !(at.block() instanceof StorageBlock);
-            // an existing block that pushes items here would mix them into our lines
+            // an existing block that pushes items here would mix them into our lines; next to an
+            // output building that pushes to its neighbours only a belt pointing into it may stand
+            sn.approach[rx][ry] = pushedByOutput(x, y);
+            Item ore = at == null || at.solid() ? null : at.drop();
+            sn.otherOre[rx][ry] = ore != null && ore != target && !ore.lowPriority;
             sn.belt[rx][ry] = empty && !fedByExisting(x, y) && Build.validPlace(belt, team, x, y, 0) && (sn.bridge == null || Build.validPlace(sn.bridge, team, x, y, 0));
             sn.node[rx][ry] = empty && sn.node0 != null && Build.validPlace(sn.node0, team, x, y, 0);
             Tile t = world.tile(x, y);
@@ -269,7 +312,7 @@ public class DrillFieldJob{
                 Drill d = sn.types[i];
                 int s = d.size, off = (s - 1) / 2;
                 sn.drop[i][rx][ry] = d.canMine(t) ? d.getDrop(t).id : -1;
-                sn.drillMin[i][rx][ry] = rx + s <= sn.rw && ry + s <= sn.rh && footprintEmpty(x, y, s) && !touchesExistingLogistics(x, y, s)
+                sn.drillMin[i][rx][ry] = rx + s <= sn.rw && ry + s <= sn.rh && footprintEmpty(x, y, s) && !touchesExistingLogistics(x, y, s) && !coversConveyorFront(x, y, s)
                     && Build.validPlace(d, team, x + off, y + off, 0);
             }
         }
@@ -311,10 +354,15 @@ public class DrillFieldJob{
      * crafters... dump into any neighbour; a conveyor only into the tile in front of it. Storage
      * (cores, vaults, containers) never pushes.
      */
-    public static boolean fedByExisting(int x, int y){
+    public boolean fedByExisting(int x, int y){
         for(int d = 0; d < 4; d++){
             Tile n = world.tile(x + Geometry.d4x(d), y + Geometry.d4y(d));
             if(n == null || n.build == null || !n.block().hasItems || n.block() instanceof StorageBlock) continue;
+            // an output building's neighbours are handled as approach tiles (except a conveyor's front)
+            if(outputBuildings.contains(n.build) && !(n.block() instanceof Conveyor || n.block() instanceof Duct)){
+                if(n.block() instanceof ItemBridge ib && bridgeLinked(ib, n.build) && n.build.relativeTo(x, y) == linkDir(n.build)) return true; // its link side refuses items
+                continue;
+            }
             if(n.block() instanceof Conveyor || n.block() instanceof Duct){
                 Tile front = n.build.front() == null ? null : n.build.front().tile;
                 if(front != null && front.x == x && front.y == y) return true;
@@ -330,15 +378,50 @@ public class DrillFieldJob{
      * bridge, router...) next to it? Then part of its output would leak into the player's network.
      * Storage is fine (delivering there is harmless).
      */
-    public static boolean touchesExistingLogistics(int x, int y, int size){
+    public boolean touchesExistingLogistics(int x, int y, int size){
         for(int i = -1; i <= size; i++) for(int j = -1; j <= size; j++){
             boolean edge = (i == -1 || i == size) != (j == -1 || j == size);
             if(!edge) continue;
             Tile n = world.tile(x + i, y + j);
-            if(n != null && n.build != null && n.block().hasItems && n.block().acceptsItems && !(n.block() instanceof StorageBlock)) return true;
+            if(n != null && n.build != null && n.block().hasItems && n.block().acceptsItems && !(n.block() instanceof StorageBlock)
+                && !outputBuildings.contains(n.build)) return true; // a drill next to an output building delivers into it
         }
         return false;
     }
+
+    /** a drill must not sit in front of an existing conveyor (that conveyor would stall) */
+    public static boolean coversConveyorFront(int x, int y, int size){
+        for(int i = 0; i < size; i++) for(int j = 0; j < size; j++){
+            for(int d = 0; d < 4; d++){
+                Tile n = world.tile(x + i + Geometry.d4x(d), y + j + Geometry.d4y(d));
+                if(n == null || n.build == null || !(n.block() instanceof Conveyor || n.block() instanceof Duct)) continue;
+                Building f = n.build.front();
+                if(f != null && f.tile.x == x + i && f.tile.y == y + j) return true;
+                if(f == null && n.build.tile.x + Geometry.d4x(n.build.rotation) == x + i && n.build.tile.y + Geometry.d4y(n.build.rotation) == y + j) return true;
+            }
+        }
+        return false;
+    }
+
+    /** next to an output building that pushes items into its neighbours (routers, sorters, end bridges...) */
+    boolean pushedByOutput(int x, int y){
+        for(int d = 0; d < 4; d++){
+            Tile n = world.tile(x + Geometry.d4x(d), y + Geometry.d4y(d));
+            if(n == null || n.build == null || !outputBuildings.contains(n.build)) continue;
+            Block b = n.block();
+            if(b instanceof Conveyor || b instanceof Duct || b instanceof StorageBlock) continue;
+            if(b instanceof ItemBridge ib && bridgeLinked(ib, n.build)) continue; // a linked bridge only sends along its link
+            return true;
+        }
+        return false;
+    }
+
+    static int linkDir(Building b){
+        Tile l = world.tile(((ItemBridge.ItemBridgeBuild)b).link);
+        return l == null ? -1 : b.relativeTo(l.x, l.y);
+    }
+
+    final ObjectSet<Building> outputBuildings = new ObjectSet<>();
 
     public static boolean footprintEmpty(int x, int y, int size){
         for(int i = 0; i < size; i++) for(int j = 0; j < size; j++) if(!empty(x + i, y + j)) return false;
@@ -484,10 +567,13 @@ public class DrillFieldJob{
         p.typeSize = new int[T]; p.typeRate = sn.rate; p.typePowered = new boolean[T];
         p.typeDrop = new int[T][W][H]; p.typeDrillOk = new boolean[T][W][H];
         p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H]; p.foreignAcceptor = new boolean[W][H];
+        p.approachOnly = new boolean[W][H]; p.otherOre = new boolean[W][H];
         for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
             int rx = f.wx(u, v) - ax, ry = f.wy(u, v) - ay;
             p.beltOk[u][v] = sn.belt[rx][ry];
             p.foreignAcceptor[u][v] = sn.acceptor[rx][ry];
+            p.approachOnly[u][v] = sn.approach[rx][ry];
+            p.otherOre[u][v] = sn.otherOre[rx][ry];
             p.nodeOk[u][v] = sn.node[rx][ry];
             for(int i = 0; i < T; i++) p.typeDrop[i][u][v] = sn.drop[i][rx][ry];
         }
@@ -508,6 +594,15 @@ public class DrillFieldJob{
             p.sinks[i] = new int[]{f.lu(w[0], w[1]), f.lv(w[0], w[1])};
         }
         p.sinkReserve = sinkReserve;
+        p.sinkRects = new int[outPorts.size][];
+        for(int i = 0; i < outPorts.size; i++){
+            Building b = outPorts.get(i).existing;
+            if(b == null) continue;
+            // every tile of the building counts as delivered
+            int off = (b.block.size - 1) / 2, x0 = b.tile.x - off, y0 = b.tile.y - off, x1 = x0 + b.block.size - 1, y1 = y0 + b.block.size - 1;
+            int u0 = f.lu(x0, y0), v0 = f.lv(x0, y0), u1 = f.lu(x1, y1), v1 = f.lv(x1, y1);
+            p.sinkRects[i] = new int[]{Math.min(u0, u1), Math.min(v0, v1), Math.max(u0, u1), Math.max(v0, v1)};
+        }
         p.portV = Mathf.clamp(p.sinks[0][1], 0, H - 1);
         if(c.beltCapacity < Float.MAX_VALUE){
             p.sinkCapacity = c.beltCapacity;
@@ -516,11 +611,25 @@ public class DrillFieldJob{
         if(waterPorts.size > 0){
             p.water = true;
             p.waterBoost = sn.boost;
-            p.waterPorts = new int[waterPorts.size][];
-            for(int i = 0; i < waterPorts.size; i++){
-                int[] w = waterTile(waterPorts.get(i));
-                p.waterPorts[i] = new int[]{f.lu(w[0], w[1]), f.lv(w[0], w[1])};
+            Seq<int[]> routers = new Seq<>(), sources = new Seq<>();
+            for(Port wp : waterPorts){
+                if(wp.existing == null){
+                    int[] w = waterTile(wp);
+                    routers.add(new int[]{f.lu(w[0], w[1]), f.lv(w[0], w[1])});
+                    continue;
+                }
+                // an existing water block: a source on each of its tiles, outputting where the game would
+                Building b = wp.existing;
+                int mask = 15;
+                if(b.block instanceof Conduit) mask = 1 << ((b.rotation - dir + 4) % 4);
+                int off = (b.block.size - 1) / 2;
+                for(int i = 0; i < b.block.size; i++) for(int j = 0; j < b.block.size; j++){
+                    int x = b.tile.x - off + i, y = b.tile.y - off + j;
+                    sources.add(new int[]{f.lu(x, y), f.lv(x, y), mask});
+                }
             }
+            p.waterPorts = routers.isEmpty() ? null : routers.toArray(int[].class);
+            p.waterSources = sources.isEmpty() ? null : sources.toArray(int[].class);
             p.liquidBridgeRange = sn.liquidRange;
         }
 
