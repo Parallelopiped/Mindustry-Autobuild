@@ -14,6 +14,7 @@ import mindustry.world.*;
 import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.power.*;
 import mindustry.world.blocks.production.*;
+import mindustry.world.blocks.storage.*;
 import mindustry.world.consumers.*;
 
 import java.util.*;
@@ -210,6 +211,8 @@ public class DrillFieldJob{
     public static class Snapshot{
         int rw, rh, s;
         boolean[][] belt, node;
+        /** an existing building that takes items stands here */
+        boolean[][] acceptor;
         /** drill types: 0 = the chosen drill, then smaller fillers (one per size) */
         Drill[] types;
         double[] rate;
@@ -250,19 +253,24 @@ public class DrillFieldJob{
             sn.liquidRange = available(Blocks.bridgeConduit) ? ((ItemBridge)Blocks.bridgeConduit).range : 0;
         }
         int T = sn.types.length;
-        sn.belt = new boolean[sn.rw][sn.rh]; sn.node = new boolean[sn.rw][sn.rh]; sn.drillMin = new boolean[T][sn.rw][sn.rh]; sn.drop = new int[T][sn.rw][sn.rh];
+        sn.belt = new boolean[sn.rw][sn.rh]; sn.node = new boolean[sn.rw][sn.rh]; sn.acceptor = new boolean[sn.rw][sn.rh]; sn.drillMin = new boolean[T][sn.rw][sn.rh]; sn.drop = new int[T][sn.rw][sn.rh];
         sn.low = new boolean[content.items().size];
         for(Item i : content.items()) sn.low[i.id] = i.lowPriority;
         for(int rx = 0; rx < sn.rw; rx++) for(int ry = 0; ry < sn.rh; ry++){
             int x = ax + rx, y = ay + ry;
-            sn.belt[rx][ry] = Build.validPlace(belt, team, x, y, 0) && (sn.bridge == null || Build.validPlace(sn.bridge, team, x, y, 0));
-            sn.node[rx][ry] = sn.node0 != null && Build.validPlace(sn.node0, team, x, y, 0);
+            boolean empty = empty(x, y);
+            Tile at = world.tile(x, y);
+            sn.acceptor[rx][ry] = at != null && at.build != null && at.block().hasItems && at.block().acceptsItems && !(at.block() instanceof StorageBlock);
+            // an existing block that pushes items here would mix them into our lines
+            sn.belt[rx][ry] = empty && !fedByExisting(x, y) && Build.validPlace(belt, team, x, y, 0) && (sn.bridge == null || Build.validPlace(sn.bridge, team, x, y, 0));
+            sn.node[rx][ry] = empty && sn.node0 != null && Build.validPlace(sn.node0, team, x, y, 0);
             Tile t = world.tile(x, y);
             for(int i = 0; i < T; i++){
                 Drill d = sn.types[i];
                 int s = d.size, off = (s - 1) / 2;
                 sn.drop[i][rx][ry] = d.canMine(t) ? d.getDrop(t).id : -1;
-                sn.drillMin[i][rx][ry] = rx + s <= sn.rw && ry + s <= sn.rh && Build.validPlace(d, team, x + off, y + off, 0);
+                sn.drillMin[i][rx][ry] = rx + s <= sn.rw && ry + s <= sn.rh && footprintEmpty(x, y, s) && !touchesExistingLogistics(x, y, s)
+                    && Build.validPlace(d, team, x + off, y + off, 0);
             }
         }
         return sn;
@@ -286,6 +294,61 @@ public class DrillFieldJob{
         for(Drill d : best.values()) out.add(d);
         out.sort(d -> -d.size);
         return out.toArray(Drill.class);
+    }
+
+    /**
+     * Nothing built on the tile. Build.validPlace alone also accepts tiles whose block may be
+     * *replaced* (Block.canReplace: a belt over a belt, a better drill over a drill, ...), which
+     * would plan over the player's existing structures.
+     */
+    public static boolean empty(int x, int y){
+        Tile t = world.tile(x, y);
+        return t != null && t.build == null && t.block() == Blocks.air;
+    }
+
+    /**
+     * Would an existing building push items into a block at (x,y)? Drills, routers, bridges,
+     * crafters... dump into any neighbour; a conveyor only into the tile in front of it. Storage
+     * (cores, vaults, containers) never pushes.
+     */
+    public static boolean fedByExisting(int x, int y){
+        for(int d = 0; d < 4; d++){
+            Tile n = world.tile(x + Geometry.d4x(d), y + Geometry.d4y(d));
+            if(n == null || n.build == null || !n.block().hasItems || n.block() instanceof StorageBlock) continue;
+            if(n.block() instanceof Conveyor || n.block() instanceof Duct){
+                Tile front = n.build.front() == null ? null : n.build.front().tile;
+                if(front != null && front.x == x && front.y == y) return true;
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Would one of our drills at this footprint give items to an existing logistics block (belt,
+     * bridge, router...) next to it? Then part of its output would leak into the player's network.
+     * Storage is fine (delivering there is harmless).
+     */
+    public static boolean touchesExistingLogistics(int x, int y, int size){
+        for(int i = -1; i <= size; i++) for(int j = -1; j <= size; j++){
+            boolean edge = (i == -1 || i == size) != (j == -1 || j == size);
+            if(!edge) continue;
+            Tile n = world.tile(x + i, y + j);
+            if(n != null && n.build != null && n.block().hasItems && n.block().acceptsItems && !(n.block() instanceof StorageBlock)) return true;
+        }
+        return false;
+    }
+
+    public static boolean footprintEmpty(int x, int y, int size){
+        for(int i = 0; i < size; i++) for(int j = 0; j < size; j++) if(!empty(x + i, y + j)) return false;
+        return true;
+    }
+
+    /** a plan can be built as is: placeable and not replacing anything */
+    public static boolean placeable(BuildPlan p, Team team){
+        int off = (p.block.size - 1) / 2;
+        return footprintEmpty(p.x - off, p.y - off, p.block.size) && Build.validPlace(p.block, team, p.x, p.y, p.rotation);
     }
 
     // ------------------------------------------------------------------ planning
@@ -420,10 +483,11 @@ public class DrillFieldJob{
         int T = sn.types.length;
         p.typeSize = new int[T]; p.typeRate = sn.rate; p.typePowered = new boolean[T];
         p.typeDrop = new int[T][W][H]; p.typeDrillOk = new boolean[T][W][H];
-        p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H];
+        p.beltOk = new boolean[W][H]; p.nodeOk = new boolean[W][H]; p.foreignAcceptor = new boolean[W][H];
         for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
             int rx = f.wx(u, v) - ax, ry = f.wy(u, v) - ay;
             p.beltOk[u][v] = sn.belt[rx][ry];
+            p.foreignAcceptor[u][v] = sn.acceptor[rx][ry];
             p.nodeOk[u][v] = sn.node[rx][ry];
             for(int i = 0; i < T; i++) p.typeDrop[i][u][v] = sn.drop[i][rx][ry];
         }

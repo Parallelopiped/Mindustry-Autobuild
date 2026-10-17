@@ -7,6 +7,16 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-17
+### Fixed
+- Plans were drawn over existing structures (red overlaps in the preview): `Build.validPlace` also
+  accepts tiles whose block may be *replaced* (a belt over a belt, a better drill over a drill...).
+  Only empty tiles are planned on now, in the snapshot and in the preview check.
+- No item mixing with existing networks: our belts/bridges are not placed where an existing drill,
+  router, bridge (or a conveyor's front) would push items into them, our drills don't touch existing
+  logistics blocks (storage is fine), and our end bridges don't dump into existing ones.
+- Server test option `existing=N` (pre-placed drills and belts; reports overlaps).
+
 ## [0.9.0] - 2026-10-17
 ### Added
 - **Output line capacity**: every output carries at most one belt's worth (the chosen belt's speed).
@@ -172,6 +182,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[0.9.1]: #
 [0.9.0]: #
 [0.8.1]: #
 [0.8.0]: #

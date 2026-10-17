@@ -3,6 +3,6 @@ name: "autobuild"
 author: "Maiolao"
 main: "autobuild.AutoBuildMod"
 description: "Select a region and auto-build a drill field: click (or auto-pick) the item output and water input, preview the plan, try alternatives, then build."
-version: "0.9.0"
+version: "0.9.1"
 minGameVersion: 160
 java: true

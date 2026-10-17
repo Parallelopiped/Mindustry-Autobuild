@@ -103,6 +103,8 @@ public class DrillLayoutPlanner{
         public float sinkCapacity, itemsPerOre;
         /** water ports (liquid routers, local coords). Null: one on waterSide at waterPos */
         public int[][] waterPorts;
+        /** existing (not ours) buildings that take items: an end bridge must not dump into them */
+        public boolean[][] foreignAcceptor;
 
         public Params copy(){
             Params q = new Params();
@@ -114,6 +116,7 @@ public class DrillLayoutPlanner{
             q.variant = variant;
             q.typeSize = typeSize; q.typeRate = typeRate; q.typePowered = typePowered; q.typeDrop = typeDrop; q.typeDrillOk = typeDrillOk;
             q.family = family;
+            q.foreignAcceptor = foreignAcceptor;
             q.sinks = sinks; q.sinkReserve = sinkReserve; q.sinkCapacity = sinkCapacity; q.itemsPerOre = itemsPerOre; q.waterPorts = waterPorts;
             return q;
         }
@@ -1794,6 +1797,7 @@ public class DrillLayoutPlanner{
             if(x < 0 || y < 0 || x >= W || y >= H) continue;
             int o = occ[x][y];
             if(o >= 0 || o == LANE || o == OBRIDGE) return false;
+            if(p.foreignAcceptor != null && p.foreignAcceptor[x][y]) return false;
         }
         return true;
     }

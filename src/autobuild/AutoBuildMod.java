@@ -582,7 +582,7 @@ public class AutoBuildMod extends Mod{
                 // like a schematic being placed: normal ghosts, red where the tile is no longer free
                 Draw.z(Layer.plans);
                 for(BuildPlan p : c.plans){
-                    boolean valid = Build.validPlace(p.block, job.team, p.x, p.y, p.rotation);
+                    boolean valid = DrillFieldJob.placeable(p, job.team);
                     // drawPlan scales by animScale, which the game only animates for the player's own queue (starts at 0)
                     p.animScale = 1f;
                     p.block.drawPlan(p, c.plans, valid);

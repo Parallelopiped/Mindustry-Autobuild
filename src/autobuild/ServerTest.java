@@ -1,5 +1,6 @@
 package autobuild;
 
+import arc.math.*;
 import arc.math.geom.*;
 import arc.struct.*;
 import arc.util.*;
@@ -39,6 +40,7 @@ public class ServerTest{
             int size = 30;
             Block belt = Blocks.conveyor, conduit = Blocks.conduit;
             boolean bridges = true, mix = true, water = false;
+            int existing = 0;
             String waterSpec = "auto";
             // a variadic "[options...]" parameter arrives as one space-joined string
             Seq<String> opts = new Seq<>();
@@ -52,6 +54,7 @@ public class ServerTest{
                     case "nobridge": bridges = false; break;
                     case "nomix": mix = false; break;
                     case "water": water = true; waterSpec = kv[1]; break;
+                    case "existing": existing = Strings.parseInt(kv[1], 0); break;
                     default: Log.err("unknown option @", opt); return;
                 }
             }
@@ -67,6 +70,28 @@ public class ServerTest{
             if(!parsePorts(job, args[2], job.outs) || !parsePorts(job, waterSpec, job.waters)){ Log.err("bad port list"); return; }
             for(DrillFieldJob.Port pt : job.outs) if(!pt.edge) job.sinkReserve = 1; // room for a 3x3 vault
             Log.info("[abtest] region (@,@)-(@,@)", job.ax, job.ay, job.bx, job.by);
+            // pre-existing structures of the same team: drills on ore and short belt lines
+            IntSet occupied = new IntSet();
+            if(existing > 0){
+                Rand r = new Rand(42);
+                int placed = 0;
+                for(int tries = 0; tries < existing * 50 && placed < existing; tries++){
+                    int x = r.random(job.ax, job.bx - 2), y = r.random(job.ay, job.by - 2);
+                    boolean drillHere = r.chance(0.5);
+                    Block b = drillHere ? Blocks.mechanicalDrill : Blocks.conveyor;
+                    int len = drillHere ? 1 : 3 + r.random(5);
+                    boolean ok = true;
+                    for(int i = 0; i < len && ok; i++) ok = Build.validPlace(b, job.team, x + (drillHere ? 0 : i), y, 0) && DrillFieldJob.footprintEmpty(x + (drillHere ? 0 : i), y, b.size);
+                    if(!ok) continue;
+                    for(int i = 0; i < len; i++){
+                        Tile t = world.tile(x + (drillHere ? 0 : i), y);
+                        t.setBlock(b, job.team, 0);
+                        for(Tile lt : t.build.tile.getLinkedTiles(new Seq<>())) occupied.add(lt.pos());
+                    }
+                    placed++;
+                }
+                Log.info("[abtest] placed @ existing structures (@ tiles)", placed, occupied.size);
+            }
             DrillFieldJob.Snapshot sn = job.prepare();
             DrillFieldJob.Candidate cand = sn == null ? null : job.search(sn, 0, 3, null);
             if(cand == null || !cand.ok()){
@@ -83,6 +108,15 @@ public class ServerTest{
                 return;
             }
             Log.info("[abtest] @ | @ | variant @", Strings.stripColors(cand.summary()).replace('\n', ' '), cand.portText(), cand.variant);
+            if(existing > 0){
+                int overlaps = 0, notPlaceable = 0;
+                for(BuildPlan p : cand.plans){
+                    int off = (p.block.size - 1) / 2;
+                    for(int i = 0; i < p.block.size; i++) for(int j = 0; j < p.block.size; j++) if(occupied.contains(Point2.pack(p.x - off + i, p.y - off + j))) overlaps++;
+                    if(!DrillFieldJob.placeable(p, job.team)) notPlaceable++;
+                }
+                Log.info("[abtest] plan tiles on existing structures: @, plans not placeable as is: @", overlaps, notPlaceable);
+            }
 
             boolean first = true;
             for(BuildPlan p : cand.plans){
