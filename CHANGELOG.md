@@ -7,6 +7,23 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-18
+### Changed
+- **Defense layout rebuilt as rows facing the route** (like a hand-built defense line): walls,
+  a support row (menders, power-node slots), then turret rows with supply lanes between them -
+  short-range turrets in front, long-range behind; several row orders are tried and the best kept.
+  Where the route runs diagonally the region is split into strips that step along it.
+- **Supply lanes**: one row of belts / pipes; lane tiles next to turrets become routers (at most
+  3 in a row, so items don't wander back and forth), ammo and liquid lanes alternate so every
+  turret row gets both - water now reaches every turret beside a liquid lane.
+- **Only one side of the route** is used (walls too); nothing of the plan, nodes and bridges
+  included, stands on the wall line or in front of it.
+- **Input ports anywhere on the map** (outside the region): trunks run from there to the lane
+  ends, kept away from the route (cost grows within enemy range) and short (bridges); a router
+  hub at each port with one side left free for your belt / pipe.
+- The region is filled completely: regions over 900 tiles are refused (select a strip along the
+  route). The "turrets at most" slider is gone.
+
 ## [1.0.0] - 2026-10-18
 ### Added
 - **Defense** (second facility, a tab in the settings dialog): select a region on the enemy route,
@@ -222,6 +239,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.1.0]: #
 [1.0.0]: #
 [0.10.0]: #
 [0.9.1]: #

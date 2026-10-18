@@ -20,10 +20,17 @@ public class PortKind{
     /** why an existing building can't serve as this port, or null if it can */
     public final Func<Building, String> check;
     public final Seq<Port> picks = new Seq<>();
+    /** may be picked anywhere on the map (outside the region), not just on / in it */
+    public boolean anywhere;
 
     public PortKind(String name, String plural, Color color, boolean input, String edgeHelp, String interiorHelp, Func<Building, String> check){
         this.name = name; this.plural = plural; this.color = color; this.input = input;
         this.edgeHelp = edgeHelp; this.interiorHelp = interiorHelp; this.check = check;
+    }
+
+    public PortKind anywhere(){
+        anywhere = true;
+        return this;
     }
 
     /** why this port can't be used (only existing buildings are checked), or null */

@@ -98,6 +98,26 @@ public abstract class BuildJob{
         return Port.edge((int)s[0], s[1]);
     }
 
+    /** A click for a port kind that may be anywhere: one of our buildings, or that tile. */
+    public Port classifyAnywhere(int tx, int ty){
+        Tile t = world.tile(tx, ty);
+        if(t != null && t.build != null && t.build.team == team){
+            Port p = Port.at(t.build.tile.x, t.build.tile.y);
+            p.existing = t.build;
+            return p;
+        }
+        return Port.at(tx, ty);
+    }
+
+    /** why a port picked for this kind can't be used (besides the building check), or null */
+    public String portError(PortKind kind, Port p){
+        if(!kind.anywhere || p.existing != null) return null;
+        if(world.tile(p.x, p.y) == null) return "outside the map";
+        if(inRegion(p.x, p.y)) return "pick a tile outside the region (the region is filled with the defense)";
+        if(!empty(p.x, p.y) || world.tile(p.x, p.y).solid()) return "that tile is taken";
+        return null;
+    }
+
     /** the tile a port's marker sits on: the edge tile, or its own tile */
     public int[] portTile(Port p){
         return p.edge ? edgeTile(p.side, p.frac) : new int[]{p.x, p.y};

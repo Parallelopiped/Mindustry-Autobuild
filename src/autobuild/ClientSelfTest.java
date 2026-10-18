@@ -181,7 +181,7 @@ public class ClientSelfTest{
         mod.selectRegion(0, 0, world.width() - 1, world.height() - 1);
         if(job.previewRoutes.isEmpty()){ fail("no enemy route on this map"); return; }
         int[] route = job.previewRoutes.max(r -> r.length);
-        job.regionOnRoute(route, job.openStretch(route, 30), 30);
+        job.regionOnRoute(route, job.openStretch(route, 24), 24);
         mod.selectRegion(job.ax, job.ay, job.bx, job.by);
         job.turrets.clear();
         job.turrets.add((mindustry.world.blocks.defense.turrets.Turret)Blocks.duo, (mindustry.world.blocks.defense.turrets.Turret)Blocks.hail,

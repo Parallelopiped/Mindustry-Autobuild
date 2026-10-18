@@ -24,8 +24,8 @@ public class DefenseTest{
             for(int variant = 0; variant < 2; variant++){
                 Case c = new Case(seed, variant);
                 long t0 = System.currentTimeMillis();
-                DefensePlanner pl = new DefensePlanner(c.p);
-                boolean res = pl.plan();
+                DefensePlanner pl = DefensePlanner.planBest(c.p, new DefensePlanner.Ctl());
+                boolean res = pl.failure == null;
                 time += System.currentTimeMillis() - t0;
                 n++;
                 if(!res){
@@ -42,8 +42,8 @@ public class DefenseTest{
                 ok++;
                 sumG += pl.meanGroundDps; sumCov += pl.coveredGround;
                 if(seed < 3 && variant == 0){
-                    System.out.println(String.format("seed %d %s turrets=%d walls=%d prot=%d pipes=%d bridges=%d nodes=%d mines=%d dps=%.0f cov=%.0f%% changed=%b",
-                        seed, c.desc, pl.turrets, pl.walls, pl.protectors, pl.pipes, pl.bridges, pl.nodes, pl.mines, pl.meanGroundDps, pl.coveredGround * 100, pl.routeChanged));
+                    System.out.println(String.format("seed %d %s [%s] turrets=%d walls=%d prot=%d pipes=%d bridges=%d nodes=%d mines=%d dps=%.0f cov=%.0f%% changed=%b",
+                        seed, c.desc, pl.templateName, pl.turrets, pl.walls, pl.protectors, pl.pipes, pl.bridges, pl.nodes, pl.mines, pl.meanGroundDps, pl.coveredGround * 100, pl.routeChanged));
                     print(c, pl);
                 }
             }
@@ -91,20 +91,24 @@ public class DefenseTest{
             p.airLines = new float[][]{{sx, sy, cx, cy}};
             p.groundWeight = 0.7; p.airWeight = 0.3;
             p.enemyRange = 7;
-            // region: around the middle of the route
+            // region: a strip beside the middle of the route (sometimes over it); the grid: the region + 8 tiles
             EnemyRoutes er = new EnemyRoutes(mw, mh, p.pathCost, p.nearSolid);
             er.flow(p.targets);
             int[] route = er.trace(p.groundSpawns[0]);
             int mid = route.length == 0 ? sx + sy * mw : route[route.length * (3 + r.nextInt(4)) / 10];
-            int rw = 22 + r.nextInt(14), rh = 18 + r.nextInt(14);
-            int ox = Math.max(0, Math.min(mw - rw, mid % mw - rw / 2 + r.nextInt(9) - 4)), oy = Math.max(0, Math.min(mh - rh, mid / mw - rh / 2 + r.nextInt(9) - 4));
-            p.ox = ox; p.oy = oy; p.W = rw; p.H = rh;
-            p.free = new boolean[rw][rh];
-            p.nearForeignItems = new boolean[rw][rh];
-            p.nearForeignLiquids = new boolean[rw][rh];
-            p.nodeOk = new boolean[rw][rh];
-            for(int u = 0; u < rw; u++) for(int v = 0; v < rh; v++){
-                p.free[u][v] = !rock[ox + u + (oy + v) * mw];
+            int rw = 14 + r.nextInt(17), rh = 10 + r.nextInt(Math.max(1, Math.min(21, DefensePlanner.MAX_AREA / rw - 9)));
+            int off = r.nextInt(3) == 0 ? 0 : (r.nextBoolean() ? 1 : -1) * (rh / 2 + 1 + r.nextInt(4));
+            int rx = Math.max(0, Math.min(mw - rw, mid % mw - rw / 2)), ry = Math.max(0, Math.min(mh - rh, mid / mw - rh / 2 + off));
+            int gx0 = Math.max(0, rx - 8), gy0 = Math.max(0, ry - 8), gx1 = Math.min(mw, rx + rw + 8), gy1 = Math.min(mh, ry + rh + 8);
+            int W = gx1 - gx0, H = gy1 - gy0;
+            p.ox = gx0; p.oy = gy0; p.W = W; p.H = H;
+            p.rx0 = rx - gx0; p.ry0 = ry - gy0; p.rw = rw; p.rh = rh;
+            p.free = new boolean[W][H];
+            p.nearForeignItems = new boolean[W][H];
+            p.nearForeignLiquids = new boolean[W][H];
+            p.nodeOk = new boolean[W][H];
+            for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
+                p.free[u][v] = !rock[gx0 + u + (gy0 + v) * mw];
                 p.nodeOk[u][v] = p.free[u][v];
             }
             List<Type> types = new ArrayList<>();
@@ -123,14 +127,16 @@ public class DefenseTest{
                 Type f = new Type(); f.kind = DefensePlanner.SHIELD; f.size = 3; f.range = 12.7f; f.price = 150; f.powered = true; f.strength = 2; f.pathCost = 40; f.name = "force";
                 types.add(m); types.add(f);
             }
+            Type mp = new Type(); mp.kind = DefensePlanner.MENDER; mp.size = 2; mp.range = 10.6f; mp.price = 80; mp.powered = true; mp.strength = 1.3; mp.pathCost = 20; mp.name = "mendp";
+            if(power && seed % 3 == 1) types.add(mp);
             Type mine = new Type(); mine.kind = DefensePlanner.MINE; mine.size = 1; mine.price = 10; mine.solid = false; mine.name = "mine";
             types.add(mine);
             p.mines = seed % 2 == 1;
             p.types = types.toArray(new Type[0]);
-            p.fits = new boolean[p.types.length][rw][rh];
+            p.fits = new boolean[p.types.length][W][H];
             for(int t = 0; t < p.types.length; t++){
                 int s = p.types[t].size;
-                for(int u = 0; u + s <= rw; u++) for(int v = 0; v + s <= rh; v++){
+                for(int u = p.rx0; u + s <= p.rx0 + rw; u++) for(int v = p.ry0; v + s <= p.ry0 + rh; v++){
                     boolean f = true;
                     for(int i = 0; i < s && f; i++) for(int j = 0; j < s; j++) if(!p.free[u + i][v + j]){ f = false; break; }
                     p.fits[t][u][v] = f;
@@ -144,12 +150,11 @@ public class DefenseTest{
             p.powerAuto = power;
             p.clearance = 1 + seed % 2;
             p.wallThickness = seed % 3;
-            p.maxTurrets = 6 + seed % 10;
             p.variant = variant;
             p.seed = seed;
             p.nodePathCost = 5;
             p.logisticsPathCost = new int[][]{{0, 5, 5, 5, 5}, {0, 5, 5, 5, 0}};
-            desc = rw + "x" + rh + (liquid ? " liquid" : "") + (power ? " power" : "") + (two ? " 2ammo" : "") + " clr=" + p.clearance + " wall=" + p.wallThickness;
+            desc = rw + "x" + rh + (off == 0 ? " over" : " beside") + (liquid ? " liquid" : "") + (power ? " power" : "") + (two ? " 2ammo" : "") + " clr=" + p.clearance + " wall=" + p.wallThickness;
         }
 
         Type turret(String name, int size, float range, float minRange, double g, double a, int ammo, boolean liquidAmmo, boolean coolReq, double cool, boolean powered, double price){
@@ -194,6 +199,47 @@ public class DefenseTest{
             }
         }
         if(pl.routeChanged) return "the enemy route changed";
+        // one side: every block inside the region in one part of (region - corridor)
+        int[][] comp = new int[W][H];
+        for(int[] r : comp) Arrays.fill(r, -1);
+        int nc = 0;
+        for(int u = p.rx0; u < p.rx0 + p.rw; u++) for(int v = p.ry0; v < p.ry0 + p.rh; v++){
+            if(comp[u][v] >= 0 || corridor(route, p, u, v)) continue;
+            ArrayDeque<int[]> q = new ArrayDeque<>();
+            q.add(new int[]{u, v}); comp[u][v] = nc;
+            while(!q.isEmpty()){
+                int[] t = q.poll();
+                for(int d = 0; d < 4; d++){
+                    int nu = t[0] + DX[d], nv = t[1] + DY[d];
+                    if(nu < p.rx0 || nv < p.ry0 || nu >= p.rx0 + p.rw || nv >= p.ry0 + p.rh || comp[nu][nv] >= 0 || corridor(route, p, nu, nv)) continue;
+                    comp[nu][nv] = nc; q.add(new int[]{nu, nv});
+                }
+            }
+            nc++;
+        }
+        int side = -1;
+        for(int u = p.rx0; u < p.rx0 + p.rw; u++) for(int v = p.ry0; v < p.ry0 + p.rh; v++){
+            if(block[u][v] < 0 || comp[u][v] < 0) continue;
+            if(side < 0) side = comp[u][v];
+            else if(comp[u][v] != side) return "blocks on both sides of the route at " + u + "," + v;
+        }
+        // supply blocks and nodes stay behind the walls (per column along the front)
+        Map<Integer, Integer> wallDepth = new HashMap<>();
+        for(Place q : pl.places){
+            if(q.kind != DefensePlanner.BLOCK || p.types[q.type].kind != DefensePlanner.WALL) continue;
+            int s = p.types[q.type].size;
+            for(int i = 0; i < s; i++) for(int j = 0; j < s; j++){
+                int[] f = pl.frameOf(q.u + i, q.v + j);
+                wallDepth.merge(f[0], f[1], Math::max);
+            }
+        }
+        for(Place q : pl.places){
+            if(q.kind == DefensePlanner.BLOCK) continue;
+            if(q.u < p.rx0 || q.v < p.ry0 || q.u >= p.rx0 + p.rw || q.v >= p.ry0 + p.rh) continue;
+            int[] f = pl.frameOf(q.u, q.v);
+            Integer wd = wallDepth.get(f[0]);
+            if(wd != null && f[1] <= wd) return "supply / node in the wall line: " + q;
+        }
         // supply
         String e = flows(c, pl, block);
         if(e != null) return e;
@@ -202,6 +248,11 @@ public class DefenseTest{
     }
 
     static final int[] DX = {1, 0, -1, 0}, DY = {0, 1, 0, -1};
+
+    static boolean corridor(Set<Integer> route, Params p, int u, int v){
+        for(int t : route) if(Math.max(Math.abs(t % p.mapW - p.ox - u), Math.abs(t / p.mapW - p.oy - v)) <= p.clearance) return true;
+        return false;
+    }
 
     /** simulates every network with the game's push rules */
     static String flows(Case c, DefensePlanner pl, int[][] block){
@@ -212,7 +263,7 @@ public class DefenseTest{
             boolean[][] reached = new boolean[W][H];
             ArrayDeque<int[]> q = new ArrayDeque<>();
             // the port: items enter the port tile's block (edge: from outside)
-            for(int[] s : net.starts){
+            for(int[] s : pl.netStarts[k]){
                 if(s[0] < 0 || s[1] < 0 || s[0] >= W || s[1] >= H || block[s[0]][s[1]] < 0) continue;
                 Place b = pl.places.get(block[s[0]][s[1]]);
                 if(b.kind == DefensePlanner.BLOCK || b.kind == DefensePlanner.NODE) continue;

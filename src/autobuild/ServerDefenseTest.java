@@ -67,7 +67,7 @@ public class ServerDefenseTest{
                 if(i == null){ Log.err("no item @", n); return; }
                 j.ammo.add(i);
             }
-            int size = 30;
+            int size = 24;
             float at = 0.5f;
             boolean build = true;
             Seq<String> opts = new Seq<>();
@@ -86,7 +86,6 @@ public class ServerDefenseTest{
                     case "force": j.forceProjector = true; break;
                     case "mines": j.mines = true; break;
                     case "clr": j.clearance = Strings.parseInt(kv[1], 1); break;
-                    case "max": j.maxTurrets = Strings.parseInt(kv[1], 10); break;
                     case "nobuild": build = false; break;
                     default: Log.err("unknown option @", opt); return;
                 }
@@ -133,10 +132,19 @@ public class ServerDefenseTest{
             for(int k = 0; k < sn.netKinds.size; k++){
                 Item item = sn.netItems.get(k);
                 for(Port pt : r.ports(sn.netKinds.get(k))){
-                    if(!pt.edge){ Log.err("[abdef] interior port not supported by the test"); continue; }
-                    int[] t = j.edgeTile(pt.side, pt.frac);
-                    Tile st = world.tile(t[0] + Geometry.d4x(pt.side), t[1] + Geometry.d4y(pt.side));
-                    if(st == null || st.build != null || st.solid()){ Log.err("[abdef] no room for a source at port @", pt.name()); continue; }
+                    // a source next to the port tile (the player's belt / pipe would come in there)
+                    int[] t = j.portTile(pt);
+                    Tile st = null;
+                    // the tile the planner kept free for the player's belt
+                    for(int[] ps : r.planner.playerSide){
+                        Tile n = world.tile(sn.gx + ps[1], sn.gy + ps[2]);
+                        if(ps[0] == k && n != null && Math.abs(n.x - t[0]) + Math.abs(n.y - t[1]) == 1 && n.build == null) st = n;
+                    }
+                    for(int d = 0; d < 4 && st == null; d++){
+                        Tile n = world.tile(t[0] + Geometry.d4x(d), t[1] + Geometry.d4y(d));
+                        if(n != null && n.build == null && !n.solid() && !j.inRegion(n.x, n.y)) st = n;
+                    }
+                    if(st == null){ Log.err("[abdef] no room for a source at port @", pt.name()); continue; }
                     st.setBlock(item == null ? Blocks.liquidSource : Blocks.itemSource, j.team, 0);
                     st.build.configured(null, item == null ? sn.liquid : item);
                     Log.info("[abdef] @ source at (@,@)", item == null ? sn.liquid.name : item.name, st.x, st.y);

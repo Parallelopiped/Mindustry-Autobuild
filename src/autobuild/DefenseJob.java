@@ -60,7 +60,7 @@ public class DefenseJob extends BuildJob{
     public boolean mender = true, mendProjector, forceProjector, mines;
     public Block belt, conduit;
     public boolean bridges = true;
-    public int clearance = 1, maxTurrets = 10;
+    public int clearance = 1;
 
     // ---- threat (updated with the region) ----
     public float groundShare = 1f, airShare = 0.3f, enemyRange = 7f;
@@ -73,9 +73,9 @@ public class DefenseJob extends BuildJob{
     final ObjectMap<Item, PortKind> ammoKinds = new ObjectMap<>();
     final ObjectMap<Liquid, PortKind> liquidKinds = new ObjectMap<>();
     public final PortKind powerKind = new PortKind("Power input", "power inputs", Pal.powerLight, true,
-        "a power node is placed there: link it to your grid", "a power node you link to your grid", DefenseJob::powerSourceError);
+        "a power node is placed there: link it to your grid", "a power node is placed there: link it to your grid (or click your node / battery / generator)", DefenseJob::powerSourceError).anywhere();
 
-    volatile DefensePlanner current;
+    volatile DefensePlanner.Ctl current;
 
     boolean initialized;
 
@@ -96,12 +96,12 @@ public class DefenseJob extends BuildJob{
 
     public PortKind ammoKind(Item item){
         return ammoKinds.get(item, () -> new PortKind(item.localizedName + " input", item.localizedName + " inputs", item.color, true,
-            "your belt brings " + item.localizedName + " in there", "a tile your belt delivers into (or click your core / container / conveyor)", DefenseJob::itemSourceError));
+            "your belt brings " + item.localizedName + " in there", "a tile your belt delivers into (or click your core / container / conveyor)", DefenseJob::itemSourceError).anywhere());
     }
 
     public PortKind liquidKind(){
         return liquidKinds.get(liquid, () -> new PortKind(liquid.localizedName + " input", liquid.localizedName + " inputs", liquid.color, true,
-            "connect your pipe from outside", "a tile your pipe delivers into (or click your tank / conduit / pump)", BuildJob::liquidSourceError));
+            "connect your pipe from outside", "a tile your pipe delivers into (or click your tank / conduit / pump)", BuildJob::liquidSourceError).anywhere());
     }
 
     /** ammo items actually used by a selected turret */
@@ -143,6 +143,8 @@ public class DefenseJob extends BuildJob{
         }
         if(belt == null || !available(belt)) return "no conveyor available";
         if(powerUsed() && powerNode() == null) return "power nodes aren't available here";
+        int area = (bx - ax + 1) * (by - ay + 1);
+        if(area > DefensePlanner.MAX_AREA) return "region too large (" + area + " tiles, at most " + DefensePlanner.MAX_AREA + "): it is filled completely - select a strip along the route";
         return null;
     }
 
@@ -451,12 +453,7 @@ public class DefenseJob extends BuildJob{
                 t.button(k + (k == 1 ? " tile" : " tiles"), Styles.flatTogglet, () -> clearance = kk).checked(b -> clearance == kk).size(84f, 40f);
             }
         }).row();
-        c.table(t -> {
-            t.add("Turrets at most: ");
-            t.label(() -> "" + maxTurrets).width(40f);
-            t.slider(1, 60, 1, maxTurrets, v -> maxTurrets = (int)v).width(300f);
-        }).row();
-        c.label(() -> problem() == null ? "[lightgray]Next you click where each ammo / liquid / power comes in; right-click lets the planner choose."
+        c.label(() -> problem() == null ? "[lightgray]The region is filled completely (rows of walls, turrets and supply lanes on the side of the route with most room). Next you click where each ammo / liquid / power comes in - anywhere on the map; right-click lets the planner choose (just behind the region)."
             : "[scarlet]" + problem()).row();
     }
 
@@ -480,6 +477,8 @@ public class DefenseJob extends BuildJob{
         Seq<Seq<Port>> netPorts = new Seq<>();
         Seq<Port> powerPorts = new Seq<>();
         MapData map;
+        /** grid origin (map tiles) */
+        int gx, gy;
         Block node, belt, bridge, conduit, liquidBridge;
         Liquid liquid;
     }
@@ -498,14 +497,23 @@ public class DefenseJob extends BuildJob{
         sn.conduit = conduit;
         sn.liquidBridge = available(Blocks.bridgeConduit) ? Blocks.bridgeConduit : null;
         sn.liquid = liquid;
-        int W = bx - ax + 1, H = by - ay + 1;
+        // the grid: the region, the ports picked anywhere on the map, and a margin for the trunks
+        int margin = 8, gx0 = ax - margin, gy0 = ay - margin, gx1 = bx + margin, gy1 = by + margin;
+        for(PortKind k : portKinds()) for(Port pt : k.picks){
+            int[] t = portTile(pt);
+            gx0 = Math.min(gx0, t[0] - 3); gy0 = Math.min(gy0, t[1] - 3); gx1 = Math.max(gx1, t[0] + 3); gy1 = Math.max(gy1, t[1] + 3);
+        }
+        gx0 = Math.max(0, gx0); gy0 = Math.max(0, gy0); gx1 = Math.min(world.width() - 1, gx1); gy1 = Math.min(world.height() - 1, gy1);
+        int W = gx1 - gx0 + 1, H = gy1 - gy0 + 1;
+        sn.gx = gx0; sn.gy = gy0;
         Params p = sn.base = new Params();
         p.W = W; p.H = H;
-        p.mapW = world.width(); p.mapH = world.height(); p.ox = ax; p.oy = ay;
+        p.mapW = world.width(); p.mapH = world.height(); p.ox = gx0; p.oy = gy0;
+        p.rx0 = ax - gx0; p.ry0 = ay - gy0; p.rw = bx - ax + 1; p.rh = by - ay + 1;
         p.pathCost = sn.map.cost; p.nearSolid = sn.map.nearSolid; p.targets = sn.map.targets; p.groundSpawns = sn.map.spawns;
         p.airLines = sn.map.air.toArray(float[].class);
         p.groundWeight = groundShare; p.airWeight = airShare; p.enemyRange = enemyRange;
-        p.clearance = clearance; p.wallThickness = wall == null ? 0 : wallThickness; p.maxTurrets = maxTurrets; p.mines = mines && available(Blocks.shockMine);
+        p.clearance = clearance; p.wallThickness = wall == null ? 0 : wallThickness; p.mines = mines && available(Blocks.shockMine);
 
         // ports: every existing building picked is part of the plan's networks
         portBuildings.clear();
@@ -569,24 +577,19 @@ public class DefenseJob extends BuildJob{
         p.nearForeignItems = new boolean[W][H];
         p.nearForeignLiquids = new boolean[W][H];
         p.nodeOk = new boolean[W][H];
-        p.edgeSide = new int[W][H];
         p.fits = new boolean[T][W][H];
         for(int u = 0; u < W; u++) for(int v = 0; v < H; v++){
-            int x = ax + u, y = ay + v;
+            int x = gx0 + u, y = gy0 + v;
             boolean e = empty(x, y);
             p.free[u][v] = e && !fedByExisting(x, y) && Build.validPlace(belt, team, x, y, 0);
             p.nodeOk[u][v] = e && sn.node != null && Build.validPlace(sn.node, team, x, y, 0);
             p.nearForeignItems[u][v] = touchesExistingLogistics(x, y, 1);
             p.nearForeignLiquids[u][v] = nearForeignLiquid(x, y);
-            p.edgeSide[u][v] = -1;
-            for(int d = 0; d < 4 && p.edgeSide[u][v] < 0; d++){
-                int ox = x + Geometry.d4x(d), oy = y + Geometry.d4y(d);
-                if(!inRegion(ox, oy) && empty(ox, oy) && Build.validPlace(belt, team, ox, oy, 0)) p.edgeSide[u][v] = d;
-            }
+            if(!inRegion(x, y)) continue;
             for(int i = 0; i < T; i++){
                 Block b = sn.typeBlock[i];
                 int s = b.size, off = (s - 1) / 2;
-                p.fits[i][u][v] = u + s <= W && v + s <= H && footprintEmpty(x, y, s) && !coversConveyorFront(x, y, s)
+                p.fits[i][u][v] = inRegion(x + s - 1, y + s - 1) && footprintEmpty(x, y, s) && !coversConveyorFront(x, y, s)
                     && Build.validPlace(b, team, x + off, y + off, 0);
             }
         }
@@ -598,7 +601,7 @@ public class DefenseJob extends BuildJob{
             n.bridgeRange = n.liquid ? (sn.liquidBridge == null ? 0 : ((ItemBridge)sn.liquidBridge).range) : (sn.bridge == null ? 0 : ((ItemBridge)sn.bridge).range);
             n.auto = sn.netPorts.get(k).isEmpty();
             Seq<int[]> starts = new Seq<>();
-            for(Port pt : sn.netPorts.get(k)) addStarts(pt, n.liquid, starts);
+            for(Port pt : sn.netPorts.get(k)) addStarts(sn, pt, n.liquid, starts);
             n.starts = starts.toArray(int[].class);
         }
         // power
@@ -610,10 +613,10 @@ public class DefenseJob extends BuildJob{
                 if(pt.existing != null){
                     Building b = pt.existing;
                     int off = (b.block.size - 1) / 2;
-                    anchors.add(new int[]{b.tile.x - off - ax, b.tile.y - off - ay, b.block.size});
+                    anchors.add(new int[]{b.tile.x - off - gx0, b.tile.y - off - gy0, b.block.size});
                 }else{
                     int[] t = portTile(pt);
-                    ports.add(new int[]{t[0] - ax, t[1] - ay});
+                    ports.add(new int[]{t[0] - gx0, t[1] - gy0});
                 }
             }
             p.powerAnchors = anchors.toArray(int[].class);
@@ -676,19 +679,20 @@ public class DefenseJob extends BuildJob{
         return false;
     }
 
-    /** where a network's first blocks may go for a port: {u, v, from, source} */
-    void addStarts(Port pt, boolean liquid, Seq<int[]> out){
+    /** where a network's first blocks may go for a port (grid tiles): {u, v, from, source} */
+    void addStarts(Snapshot sn, Port pt, boolean liquid, Seq<int[]> out){
+        int gx = sn.gx, gy = sn.gy, gw = sn.base.W, gh = sn.base.H;
         if(pt.existing == null){
             int[] t = portTile(pt);
-            out.add(new int[]{t[0] - ax, t[1] - ay, pt.edge ? pt.side : -1, 0});
+            out.add(new int[]{t[0] - gx, t[1] - gy, pt.edge ? pt.side : -1, 0});
             return;
         }
         Building b = pt.existing;
         Block k = b.block;
         // a conveyor / conduit: the tile it points to
         if(k instanceof Conveyor || k instanceof Duct || k instanceof Conduit){
-            int fx = b.tile.x + Geometry.d4x(b.rotation), fy = b.tile.y + Geometry.d4y(b.rotation);
-            if(inRegion(fx, fy)) out.add(new int[]{fx - ax, fy - ay, (b.rotation + 2) % 4, 0});
+            int fx = b.tile.x + Geometry.d4x(b.rotation) - gx, fy = b.tile.y + Geometry.d4y(b.rotation) - gy;
+            if(fx >= 0 && fy >= 0 && fx < gw && fy < gh) out.add(new int[]{fx, fy, (b.rotation + 2) % 4, 0});
             return;
         }
         // storage gives items through an unloader next to it; anything else pushes into its neighbours
@@ -697,10 +701,10 @@ public class DefenseJob extends BuildJob{
         for(int i = -1; i <= k.size; i++) for(int j = -1; j <= k.size; j++){
             boolean edge = (i == -1 || i == k.size) != (j == -1 || j == k.size);
             if(!edge) continue;
-            int x = x0 + i, y = y0 + j;
-            if(!inRegion(x, y)) continue;
+            int x = x0 + i - gx, y = y0 + j - gy;
+            if(x < 0 || y < 0 || x >= gw || y >= gh || inRegion(x + gx, y + gy)) continue;
             int from = i == -1 ? 0 : i == k.size ? 2 : j == -1 ? 1 : 3;
-            out.add(new int[]{x - ax, y - ay, from, unloader ? 1 : 0});
+            out.add(new int[]{x, y, from, unloader ? 1 : 0});
         }
     }
 
@@ -721,8 +725,8 @@ public class DefenseJob extends BuildJob{
     @Override
     public void cancel(){
         super.cancel();
-        DefensePlanner p = current;
-        if(p != null) p.cancelled = true;
+        DefensePlanner.Ctl c = current;
+        if(c != null) c.cancelled = true;
     }
 
     public Result plan(Snapshot sn, int variant, Progress progress){
@@ -730,13 +734,17 @@ public class DefenseJob extends BuildJob{
         p.variant = variant;
         p.seed = variant * 7919L;
         Result r = new Result(sn);
-        DefensePlanner pl = r.planner = current = new DefensePlanner(p);
+        DefensePlanner.Ctl ctl = current = new DefensePlanner.Ctl();
         if(cancelled) throw new CancelledException();
-        if(progress != null) pl.listener = (st, places) -> progress.frame("#" + variant + ": " + st, r.toPlans(places));
+        if(progress != null){
+            ctl.listener = (st, places) -> progress.frame("#" + variant + ": " + st, r.toPlans(places));
+            ctl.snapshotInterval = 2;
+        }
         long time = Time.millis();
-        boolean ok = pl.plan();
-        Log.info("[autobuild] defense @x@ var=@ ok=@ score=@ turrets=@ walls=@ prot=@ pipes=@ bridges=@ nodes=@ mines=@ dps=@/@ cov=@ changed=@ in @ms @",
-            p.W, p.H, variant, ok, Strings.autoFixed((float)pl.score, 1), pl.turrets, pl.walls, pl.protectors, pl.pipes, pl.bridges, pl.nodes, pl.mines,
+        DefensePlanner pl = r.planner = DefensePlanner.planBest(p, ctl);
+        boolean ok = pl.failure == null;
+        Log.info("[autobuild] defense @x@ [@] front=@ var=@ ok=@ score=@ turrets=@ walls=@ prot=@ pipes=@ bridges=@ nodes=@ mines=@ dps=@/@ cov=@ changed=@ in @ms @",
+            p.rw, p.rh, pl.templateName, pl.front, variant, ok, Strings.autoFixed((float)pl.score, 1), pl.turrets, pl.walls, pl.protectors, pl.pipes, pl.bridges, pl.nodes, pl.mines,
             Strings.autoFixed((float)pl.meanGroundDps, 0), Strings.autoFixed((float)pl.meanAirDps, 0), Strings.autoFixed((float)pl.coveredGround, 2), pl.routeChanged,
             Time.timeSinceMillis(time), ok ? "" : pl.failure);
         if(!ok){ r.error = pl.failure; return r; }
@@ -752,7 +760,8 @@ public class DefenseJob extends BuildJob{
         p.groundWeight = b.groundWeight; p.airWeight = b.airWeight; p.enemyRange = b.enemyRange;
         p.free = b.free; p.nearForeignItems = b.nearForeignItems; p.nearForeignLiquids = b.nearForeignLiquids; p.fits = b.fits; p.types = b.types;
         p.clearance = b.clearance; p.wallThickness = b.wallThickness; p.maxTurrets = b.maxTurrets; p.mines = b.mines;
-        p.nodeOk = b.nodeOk; p.edgeSide = b.edgeSide; p.nodeRange = b.nodeRange; p.nodeMaxLinks = b.nodeMaxLinks; p.powerAnchors = b.powerAnchors; p.powerPorts = b.powerPorts; p.powerAuto = b.powerAuto;
+        p.rx0 = b.rx0; p.ry0 = b.ry0; p.rw = b.rw; p.rh = b.rh;
+        p.nodeOk = b.nodeOk; p.nodeRange = b.nodeRange; p.nodeMaxLinks = b.nodeMaxLinks; p.powerAnchors = b.powerAnchors; p.powerPorts = b.powerPorts; p.powerAuto = b.powerAuto;
         p.pipePrice = b.pipePrice; p.bridgePrice = b.bridgePrice; p.routerPrice = b.routerPrice; p.nodePrice = b.nodePrice; p.unloaderPrice = b.unloaderPrice;
         p.nodePathCost = b.nodePathCost; p.logisticsPathCost = b.logisticsPathCost;
         p.nets = new Net[b.nets.length];
@@ -780,7 +789,7 @@ public class DefenseJob extends BuildJob{
         public double score(){ return ok() ? planner.score : Double.NEGATIVE_INFINITY; }
 
         BuildPlan toPlan(DefensePlanner.Place pl){
-            int x = ax + pl.u, y = ay + pl.v;
+            int x = sn.gx + pl.u, y = sn.gy + pl.v;
             if(pl.kind == DefensePlanner.NODE) return new BuildPlan(x, y, 0, sn.node);
             if(pl.kind == DefensePlanner.BLOCK){
                 Block b = sn.typeBlock[pl.type];
@@ -833,24 +842,19 @@ public class DefenseJob extends BuildJob{
                 boolean used = false;
                 for(DefensePlanner.Place q : planner.places) if(q.kind < DefensePlanner.BLOCK && q.type == cp[0]){ used = true; break; }
                 if(!used) continue;
-                ports.get(kind).add(edgePort(cp[1], cp[2], cp[3]));
+                ports.get(kind).add(Port.at(sn.gx + cp[1], sn.gy + cp[2]));
                 autoKinds.add(kind);
             }
             if(powerUsed()){
                 Seq<Port> ps = new Seq<>(sn.powerPorts);
                 if(planner.chosenPowerPort != null){
                     int[] cp = planner.chosenPowerPort;
-                    ps.add(cp[2] >= 0 ? edgePort(cp[0], cp[1], cp[2]) : Port.at(ax + cp[0], ay + cp[1]));
+                    ps.add(Port.at(sn.gx + cp[0], sn.gy + cp[1]));
                     autoKinds.add(powerKind);
                 }
-                for(int[] e : planner.extraPowerPorts) ps.add(Port.at(ax + e[0], ay + e[1]));
+                for(int[] e : planner.extraPowerPorts) ps.add(Port.at(sn.gx + e[0], sn.gy + e[1]));
                 ports.put(powerKind, ps);
             }
-        }
-
-        Port edgePort(int u, int v, int side){
-            float f = side % 2 == 0 ? (by == ay ? 0.5f : v / (float)(by - ay)) : (bx == ax ? 0.5f : u / (float)(bx - ax));
-            return Port.edge(side, f);
         }
 
         @Override

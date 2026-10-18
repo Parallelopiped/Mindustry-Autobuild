@@ -105,7 +105,8 @@ public class AutoBuildMod extends Mod{
             t.bottom().marginBottom(120f);
             t.table(Styles.black6, b -> {
                 b.label(() -> phase != State.pick ? "" : "Click tiles for the [accent]" + pickKind().plural + "[] (" + picks().size + " picked)\n"
-                    + "[lightgray]On the border: " + pickKind().edgeHelp + ". Inside: " + pickKind().interiorHelp
+                    + "[lightgray]" + (pickKind().anywhere ? "Anywhere outside the region: " + pickKind().interiorHelp
+                        : "On the border: " + pickKind().edgeHelp + ". Inside: " + pickKind().interiorHelp)
                     + "\nRight-click / Done: continue.  Auto: let the planner choose").pad(8f).row();
                 b.table(r -> {
                     r.defaults().size(130f, 44f);
@@ -194,7 +195,7 @@ public class AutoBuildMod extends Mod{
             case pick:
                 // inside the region: an interior port; on / near the border: snapped to the nearest edge
                 boolean near = tx >= job.ax - 3 && tx <= job.bx + 3 && ty >= job.ay - 3 && ty <= job.by + 3;
-                hover = near ? job.classify(tx, ty) : null;
+                hover = pickKind().anywhere ? (world.tile(tx, ty) == null ? null : job.classifyAnywhere(tx, ty)) : near ? job.classify(tx, ty) : null;
                 hoverValid = hover != null && portAllowed(hover);
                 if(Core.input.keyTap(KeyCode.escape)) reset();
                 else if(Core.input.keyTap(KeyCode.mouseRight)){ if(picks().isEmpty()) autoKind(); else finishKind(); }
@@ -228,12 +229,13 @@ public class AutoBuildMod extends Mod{
 
     String hoverReason(){
         String e = hover == null ? null : pickKind().error(hover);
+        if(e == null && hover != null) e = job.portError(pickKind(), hover);
         return e != null ? e : "That tile is already a port";
     }
 
     /** one port per tile; an existing building must suit the kind */
     boolean portAllowed(Port p){
-        if(pickKind().error(p) != null) return false;
+        if(pickKind().error(p) != null || job.portError(pickKind(), p) != null) return false;
         int[] t = job.portTile(p);
         for(PortKind k : kinds){
             for(Port o : k.picks){

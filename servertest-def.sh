@@ -9,7 +9,7 @@ map=$1; shift
   sleep 4; echo "host $map sandbox"
   sleep 6; echo "abroute"
   sleep 1; echo "abdef $*"
-  sleep 12; echo "abdefcheck"
+  sleep 25; echo "abdefcheck"
   sleep 1; echo "abwave ${WAVES:-3}"
   sleep ${FIGHT:-45}; echo "abwavecount"
   sleep 1; echo "exit"
