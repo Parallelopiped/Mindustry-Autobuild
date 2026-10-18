@@ -5,6 +5,7 @@ import arc.struct.*;
 import arc.util.*;
 import autobuild.plan.DrillLayoutPlanner.*;
 import mindustry.content.*;
+import mindustry.world.*;
 import mindustry.entities.units.*;
 import mindustry.game.*;
 import mindustry.game.EventType.*;
@@ -27,7 +28,7 @@ public class ClientSelfTest{
     float timer;
     int planned;
 
-    final boolean water, autoPorts;
+    final boolean water, autoPorts, defense;
     boolean sawReplay, shotReplay;
     float previewShotAt = -1f, previewShotAt2 = -1f;
     String shot;
@@ -40,6 +41,7 @@ public class ClientSelfTest{
         this.mapName = parts[0];
         this.water = spec.contains(":water");
         this.autoPorts = spec.contains(":auto");
+        this.defense = spec.contains(":defense");
         Events.on(ClientLoadEvent.class, e -> Time.runTask(30f, this::start));
         Events.run(Trigger.update, this::update);
         // screenshots for checking what the player actually sees
@@ -70,8 +72,13 @@ public class ClientSelfTest{
         if(phase == 0) return;
         timer += Time.delta / 60f;
         if(timer > 150f){ fail("timeout in phase " + phase); return; }
+        if(phase >= 10){ updateDefense(); return; }
         switch(phase){
             case 1: // wait for the world and player unit, then go through the real UI flow
+                if(defense && state.isGame() && player.unit() != null && !player.unit().dead && timer > 3f){
+                    startDefense();
+                    break;
+                }
                 if(state.isGame() && player.unit() != null && !player.unit().dead && timer > 3f){
                     DrillFieldJob job = mod.drillJob;
                     mod.job = job;
@@ -166,6 +173,83 @@ public class ClientSelfTest{
                 break;
         }
     }
+
+    /** defense: a region on the most open stretch of the enemy route, every port auto, lancers + duos + hails, walls, menders */
+    void startDefense(){
+        DefenseJob job = mod.defenseJob;
+        mod.job = job;
+        mod.selectRegion(0, 0, world.width() - 1, world.height() - 1);
+        if(job.previewRoutes.isEmpty()){ fail("no enemy route on this map"); return; }
+        int[] route = job.previewRoutes.max(r -> r.length);
+        job.regionOnRoute(route, job.openStretch(route, 30), 30);
+        mod.selectRegion(job.ax, job.ay, job.bx, job.by);
+        job.turrets.clear();
+        job.turrets.add((mindustry.world.blocks.defense.turrets.Turret)Blocks.duo, (mindustry.world.blocks.defense.turrets.Turret)Blocks.hail,
+            (mindustry.world.blocks.defense.turrets.Turret)Blocks.lancer);
+        job.ammo.clear(); job.ammo.add(Items.graphite);
+        job.mender = true; job.forceProjector = true;
+        if(!BuildJob.available(job.belt)) job.belt = Blocks.conveyor;
+        Log.info("[selftest] defense region (@,@)-(@,@), @ route(s); @", job.ax, job.ay, job.bx, job.by, job.previewRoutes.size, Strings.stripColors(job.threatText));
+        if(job.problem() != null){ fail(job.problem()); return; }
+        mod.startPicking();
+        for(int i = 0; i < 6 && mod.phase == AutoBuildMod.State.pick; i++) mod.autoKind();
+        phase = 10;
+    }
+
+    void updateDefense(){
+        switch(phase){
+            case 10: // planning, replay, preview with the route drawn
+                keepNearRegion();
+                if(mod.phase == AutoBuildMod.State.playback) sawReplay = true;
+                if(mod.phase == AutoBuildMod.State.preview){
+                    PlanResult c = mod.current();
+                    if(previewShotAt < 0){
+                        Log.info("[selftest] defense plan: @ keyframes, replay seen @; @ | @ | score @", mod.frames.size, sawReplay,
+                            Strings.stripColors(c.summary()).replace('\n', ' '), c.portText(), Strings.autoFixed((float)c.score(), 1));
+                        if(!sawReplay){ fail("no gray replay"); return; }
+                        shot = "defense"; previewShotAt = timer;
+                    }
+                    if(timer - previewShotAt < 0.5f) return;
+                    mod.anotherPlan();
+                    phase = 11;
+                }else if(mod.phase == AutoBuildMod.State.idle){ fail("defense planning failed"); return; }
+                break;
+            case 11:
+                keepNearRegion();
+                if(mod.phase == AutoBuildMod.State.preview && mod.variants.size == 2){
+                    PlanResult a = mod.variants.get(0), b = mod.variants.get(1);
+                    Log.info("[selftest] another plan: score @ (first @), different: @", Strings.autoFixed((float)b.score(), 1), Strings.autoFixed((float)a.score(), 1), !a.signature.equals(b.signature));
+                    if(a.signature.equals(b.signature)){ fail("another plan is identical"); return; }
+                    mod.show(a.score() >= b.score() ? 0 : 1);
+                    built = null;
+                    planned = mod.current().plans.size;
+                    builtPlans = mod.current().plans;
+                    mod.commit();
+                    phase = 12;
+                    timer = 0f;
+                }else if(mod.phase == AutoBuildMod.State.idle){ fail("another plan failed"); return; }
+                break;
+            case 12:
+                keepNearRegion();
+                if(player.unit().plans().isEmpty() || timer > 120f){
+                    int done = 0;
+                    for(BuildPlan p : builtPlans){
+                        var t = world.tile(p.x, p.y);
+                        if(t != null && t.block() == p.block) done++;
+                    }
+                    Log.info("[selftest] built @/@ planned blocks (queue left: @)", done, planned, player.unit().plans().size);
+                    if(done == planned){ shot = "defense-built"; phase = 13; timer = 0f; }
+                    else{ Log.info("[selftest] FAIL: not everything was built"); phase = 0; Core.app.exit(); }
+                }
+                break;
+            case 13:
+                keepNearRegion();
+                if(timer > 1f){ Log.info("[selftest] PASS"); phase = 0; Core.app.exit(); }
+                break;
+        }
+    }
+
+    Seq<BuildPlan> builtPlans;
 
     void keepNearRegion(){
         BuildJob job = mod.job;

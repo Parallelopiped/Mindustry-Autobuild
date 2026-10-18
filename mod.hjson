@@ -2,7 +2,7 @@ displayName: "AutoBuild"
 name: "autobuild"
 author: "Maiolao"
 main: "autobuild.AutoBuildMod"
-description: "Select a region and auto-build a drill field: click (or auto-pick) the item output and water input, preview the plan, try alternatives, then build."
-version: "0.10.0"
+description: "Select a region and auto-build a drill field or a defense on the enemy route: click (or auto-pick) the ports, preview the plan, try alternatives, then build."
+version: "1.0.0"
 minGameVersion: 160
 java: true

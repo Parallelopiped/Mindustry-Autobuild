@@ -7,6 +7,30 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-18
+### Added
+- **Defense** (second facility, a tab in the settings dialog): select a region on the enemy route,
+  pick turrets (every Serpulo turret: item, power, liquid, laser), ammo items, a liquid (liquid ammo
+  / coolant), wall material and thickness, menders, mend projectors, force projectors, shock mines,
+  belts / pipes, route clearance and a turret budget. Ports: one input per ammo item, the liquid,
+  power - an edge, an inside tile, or your core / container (an unloader is added), conveyor,
+  router, tank, conduit, power node, battery or generator; empty = chosen behind the defense.
+- The enemy ground route is computed like the game's flow field (same costs, same step rule) and
+  drawn as soon as the region is selected; flying units' lines too. The planner keeps the route
+  and its neighbours free, so the route stays where it is, and checks it again with the plan.
+- Turrets are placed for damage on the route with diminishing returns, enemy fire risk, price and
+  supply cost; ammo / coolant networks of belts, routers, bridges and pipes branch to every turret;
+  power nodes join the power ports (extra ports marked when the route splits the grid); walls go
+  between the route and what they protect; menders / force projectors cover exposed buildings.
+- Wave analysis in the dialog: ground / air share of the next 20 waves and enemy range.
+- Server test commands `abroute`, `abdef`, `abdefcheck`, `abwave`, `abwavecount`
+  (`servertest-def.sh`); offline `DefenseTest`; `selftest.sh <map>:defense`.
+
+### Changed
+- Shared framework for both facilities (BuildJob / PortKind / PlanResult); power-node placement
+  shared by both (PowerNetwork). Drill fields behave exactly as before.
+- Port labels of different kinds are stacked instead of overlapping.
+
 ## [0.10.0] - 2026-10-17
 ### Added
 - **Keeps other ores free**: belts, bridges, water and power nodes avoid tiles with other valuable
@@ -198,6 +222,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.0.0]: #
 [0.10.0]: #
 [0.9.1]: #
 [0.9.0]: #

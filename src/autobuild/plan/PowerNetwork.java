@@ -216,7 +216,7 @@ public class PowerNetwork{
      * an anchor, or without anchors the group of node 0. Without any node linked to an anchor, no
      * node is in group 0.
      */
-    int[] components(){
+    public int[] components(){
         int n = nodes.size();
         int[] comp = new int[n];
         Arrays.fill(comp, -1);

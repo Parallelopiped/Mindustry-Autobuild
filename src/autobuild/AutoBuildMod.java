@@ -37,7 +37,8 @@ public class AutoBuildMod extends Mod{
 
     /** facilities; their settings persist between uses */
     final DrillFieldJob drillJob = new DrillFieldJob();
-    final Seq<BuildJob> features = Seq.with(drillJob);
+    final DefenseJob defenseJob = new DefenseJob();
+    final Seq<BuildJob> features = Seq.with(drillJob, defenseJob);
     BuildJob job = drillJob;
     Object snapshot;
 
@@ -439,7 +440,10 @@ public class AutoBuildMod extends Mod{
      * Port marker. Edge output: arrow out of the region; edge input: arrow into it; interior port:
      * a diamond; an existing building: framed whole.
      */
-    void port(PortKind kind, Port p, String text, boolean valid){
+    void port(PortKind kind, Port p, String text, boolean valid){ port(kind, p, text, valid, 0); }
+
+    /** `row`: labels of different kinds are stacked so neighbouring ports stay readable */
+    void port(PortKind kind, Port p, String text, boolean valid, int row){
         int[] t = job.portTile(p);
         float px = t[0] * tilesize, py = t[1] * tilesize;
         Draw.z(Layer.overlayUI);
@@ -461,7 +465,7 @@ public class AutoBuildMod extends Mod{
             Lines.square(px, py, tilesize / 2f + 3f, 45f);
         }
         Draw.reset();
-        if(text != null) label(text, lx, ly);
+        if(text != null) label(text, lx, ly + row * tilesize * 1.6f);
     }
 
     void ghosts(Seq<BuildPlan> plans){
@@ -532,12 +536,15 @@ public class AutoBuildMod extends Mod{
                     if(p.config instanceof Point2 l && (l.x != 0 || l.y != 0)) Lines.line(p.drawx(), p.drawy(), (p.x + l.x) * tilesize, (p.y + l.y) * tilesize);
                 }
                 Draw.reset();
+                int row = 0;
                 for(PortKind k : job.portKinds()){
                     Seq<Port> ps = c.ports(k);
+                    if(ps.isEmpty()) continue;
                     for(int i = 0; i < ps.size; i++){
                         String extra = c.portLabel(k, i);
-                        port(k, ps.get(i), (ps.size > 1 ? k.name + " " + (i + 1) : k.name) + (c.auto(k) ? " (auto)" : "") + (extra == null ? "" : "  " + extra), c.portOk(k, i));
+                        port(k, ps.get(i), (ps.size > 1 ? k.name + " " + (i + 1) : k.name) + (c.auto(k) ? " (auto)" : "") + (extra == null ? "" : "  " + extra), c.portOk(k, i), row);
                     }
+                    row++;
                 }
                 break;
             }
@@ -550,5 +557,6 @@ public class AutoBuildMod extends Mod{
     @Override
     public void registerServerCommands(CommandHandler handler){
         ServerTest.register(handler);
+        ServerDefenseTest.register(handler);
     }
 }
