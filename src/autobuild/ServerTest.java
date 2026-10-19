@@ -142,8 +142,21 @@ public class ServerTest{
             for(int k = 0; k < cand.outPorts.size; k++){
                 Port pt = cand.outPorts.get(k);
                 int[] sink = cand.sinkWorld[k];
+                // a line to a port away from the region: its target collects (storage) - counted once
+                if(cand.remote != null && k < cand.remote.outRemote.size && cand.remote.outRemote.get(k)){
+                    Port up = cand.userOuts.get(cand.remote.outOwner.get(k));
+                    if(up.existing != null && up.existing.block instanceof mindustry.world.blocks.storage.StorageBlock){
+                        if(!vaults.contains(up.existing)) vaults.add(up.existing);
+                    }else Log.err("[abtest] remote output @ isn't storage: not counted", up.name());
+                    Log.info("[abtest] output @ (line to @), planned @/s", k + 1, up.name(), Strings.autoFixed((float)cand.loads[k], 2));
+                    continue;
+                }
                 if(pt.existing != null){
-                    if(pt.existing.block instanceof mindustry.world.blocks.storage.StorageBlock){ vaults.add(pt.existing); continue; }
+                    if(pt.existing.block instanceof mindustry.world.blocks.storage.StorageBlock){
+                        if(!vaults.contains(pt.existing)) vaults.add(pt.existing);
+                        Log.info("[abtest] output @ into @ (tile @,@), planned @/s", k + 1, pt.existing.block.name, pt.x, pt.y, Strings.autoFixed((float)cand.loads[k], 2));
+                        continue;
+                    }
                     // drain it into a vault on the far side (the side facing away from the region centre)
                     int cx = (job.ax + job.bx) / 2, cy = (job.ay + job.by) / 2;
                     int dx = Integer.signum(pt.x - cx), dy = Integer.signum(pt.y - cy);
@@ -161,7 +174,7 @@ public class ServerTest{
                 Log.info("[abtest] output @ at (@,@): vault (@,@), planned @/s", k + 1, sink[0], sink[1], vx, vy, Strings.autoFixed((float)cand.loads[k], 2));
             }
             // infinite water at every water port: outside an edge port, next to an interior one
-            for(Port pt : cand.waterPorts){
+            for(Port pt : cand.userWaters != null && cand.remote != null && cand.remote.any ? cand.userWaters : cand.waterPorts){
                 int[] w = job.waterTile(pt);
                 Tile st = null;
                 if(pt.existing != null){
@@ -169,8 +182,9 @@ public class ServerTest{
                     int cx = (job.ax + job.bx) / 2, cy = (job.ay + job.by) / 2;
                     int dx = Integer.signum(pt.x - cx), dy = Integer.signum(pt.y - cy);
                     if(Math.abs(pt.x - cx) >= Math.abs(pt.y - cy)) dy = 0; else dx = 0;
-                    st = world.tile(pt.x + dx, pt.y + dy);
-                    if(st != null && st.build != null) st = null;
+                    int reach = pt.existing.block.size / 2 + 1;
+                    st = world.tile(pt.x + dx * reach, pt.y + dy * reach);
+                    if(st != null && (st.build != null || st.solid())) st = null;
                 }else if(pt.edge) st = world.tile(w[0] + Geometry.d4x(pt.side), w[1] + Geometry.d4y(pt.side));
                 else for(int d = 0; d < 4 && st == null; d++){
                     Tile n = world.tile(w[0] + Geometry.d4x(d), w[1] + Geometry.d4y(d));
@@ -223,8 +237,13 @@ public class ServerTest{
                 String[] xy = bp[1].split(":");
                 Block b = content.block(bp[0]);
                 int x = job.ax + Strings.parseInt(xy[0], 0), y = job.ay + Strings.parseInt(xy[1], 0);
+                if(b == null) return false;
+                // the nearest open spot (outside the region): the whole footprint and a ring around it on open ground
+                int[] spot = openSpot(job, b.size, x, y);
+                if(spot == null) return false;
+                x = spot[0]; y = spot[1];
                 Tile tile = world.tile(x, y);
-                if(b == null || tile == null) return false;
+                Log.info("[abtest] placed @ at (@,@) for a port", b.name, x, y);
                 tile.setBlock(b, job.team, 0);
                 Port p = Port.at(x, y);
                 p.existing = tile.build;
@@ -244,6 +263,23 @@ public class ServerTest{
             }
         }
         return true;
+    }
+
+    static int[] openSpot(BuildJob job, int size, int x, int y){
+        for(int r = 0; r <= 12; r++){
+            for(int dx = -r; dx <= r; dx++) for(int dy = -r; dy <= r; dy++){
+                if(Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                int cx = x + dx, cy = y + dy, off = (size - 1) / 2;
+                boolean ok = true;
+                for(int i = -1; i <= size && ok; i++) for(int j = -1; j <= size; j++){
+                    Tile t = world.tile(cx - off + i, cy - off + j);
+                    boolean inside = i >= 0 && j >= 0 && i < size && j < size;
+                    if(t == null || t.solid() || t.build != null || t.floor().isDeep() || (inside && job.inRegion(t.x, t.y))){ ok = false; break; }
+                }
+                if(ok) return new int[]{cx, cy};
+            }
+        }
+        return null;
     }
 
     /** Pick the size x size window with the most ore of this item (2D prefix sums). */

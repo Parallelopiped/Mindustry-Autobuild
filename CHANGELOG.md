@@ -7,6 +7,18 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-19
+### Added
+- **Drill field ports anywhere on the map**: item outputs and water inputs can be clicked away from
+  the region - a tile, or your core / vault / container / belt / router / bridge (outputs), tank /
+  conduit / pump (water). A line (belts / pipes, bridges) is planned from the field to it over free
+  ground; on / near the region the click works as before.
+- **Several lines into big storage**: an output into a core / vault / container gets up to 4 lines
+  (as many as it has free sides), each one belt's worth, from the side(s) of the field facing it;
+  the field is spread over them and as many are kept as the load needs. Storage right next to the
+  region gets one line per tile facing it. The marker shows the load and the line count.
+- Server test: `#BLOCK@dx:dy` ports are placed on the nearest open spot.
+
 ## [1.1.0] - 2026-10-18
 ### Changed
 - **Defense layout rebuilt as rows facing the route** (like a hand-built defense line): walls,
@@ -239,6 +251,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.2.0]: #
 [1.1.0]: #
 [1.0.0]: #
 [0.10.0]: #

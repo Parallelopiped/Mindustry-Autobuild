@@ -57,9 +57,9 @@ public class DrillFieldJob extends BuildJob{
 
     // ---- ports: picked by the player; empty = let the planner choose ----
     public final PortKind outKind = new PortKind("Item output", "item outputs", Pal.remove, false,
-        "the belt leaves the region there", "items are delivered into that tile (put your conveyor / core there)", BuildJob::itemSinkError);
+        "the belt leaves the region there", "items are delivered into that tile (put your conveyor / core there)", BuildJob::itemSinkError).anywhereOrNear();
     public final PortKind waterKind = new PortKind("Water input", "water inputs", Pal.water, true,
-        "connect your pipe from outside", "a liquid router you feed", BuildJob::liquidSourceError);
+        "connect your pipe from outside", "a liquid router you feed", BuildJob::liquidSourceError).anywhereOrNear();
     public final Seq<Port> outs = outKind.picks, waters = waterKind.picks;
 
     volatile DrillLayoutPlanner current;
@@ -275,6 +275,8 @@ public class DrillFieldJob extends BuildJob{
         int liquidRange;
         boolean power, waterOn;
         float boost, waterRate;
+        /** the player's ports as the planner sees them, and the lines to ports away from the region */
+        RemotePorts remote;
     }
 
     /** Main thread. Returns null (and sets error) if the settings can't work here. */
@@ -308,6 +310,7 @@ public class DrillFieldJob extends BuildJob{
         sn.otherOre = new boolean[sn.rw][sn.rh];
         portBuildings.clear();
         for(Port p : outs) if(p.existing != null) portBuildings.add(p.existing);
+        for(Port p : waters) if(p.existing != null) portBuildings.add(p.existing);
         sn.drillMin = new boolean[T][sn.rw][sn.rh]; sn.drop = new int[T][sn.rw][sn.rh];
         sn.low = new boolean[content.items().size];
         for(Item i : content.items()) sn.low[i.id] = i.lowPriority;
@@ -332,6 +335,7 @@ public class DrillFieldJob extends BuildJob{
                     && Build.validPlace(d, team, x + off, y + off, 0);
             }
         }
+        sn.remote = RemotePorts.expand(this, outs, waters, water);
         return sn;
     }
 
@@ -363,6 +367,11 @@ public class DrillFieldJob extends BuildJob{
         public DrillLayoutPlanner planner;
         public int outDir, variant;
         public Seq<Port> outPorts = new Seq<>(), waterPorts = new Seq<>();
+        /** the ports as the player picked them (the planner's ports stand for these), or null */
+        public Seq<Port> userOuts, userWaters;
+        public RemotePorts remote;
+        /** player ports no line could reach */
+        public final Seq<String> unreached = new Seq<>();
         public boolean outAuto, waterAuto;
         /** per output: world tile the items go into, items/s delivered */
         public int[][] sinkWorld = new int[0][];
@@ -412,11 +421,13 @@ public class DrillFieldJob extends BuildJob{
         @Override
         public String portText(){
             StringBuilder t = new StringBuilder(outPorts.size == 1 ? "Output: " : "Outputs: ");
-            for(int i = 0; i < outPorts.size; i++) t.append(i > 0 ? ", " : "").append(outPorts.get(i).name());
+            Seq<Port> po = ports(outKind);
+            for(int i = 0; i < po.size; i++) t.append(i > 0 ? ", " : "").append(po.get(i).name());
             if(outAuto) t.append(" (auto)");
             if(water()){
-                t.append(waterPorts.size == 1 ? ", water from: " : ", water from: ");
-                for(int i = 0; i < waterPorts.size; i++) t.append(i > 0 ? ", " : "").append(waterPorts.get(i).name());
+                t.append(", water from: ");
+                Seq<Port> pw = ports(waterKind);
+                for(int i = 0; i < pw.size; i++) t.append(i > 0 ? ", " : "").append(pw.get(i).name());
                 if(waterAuto) t.append(" (auto)");
             }
             return t.toString();
@@ -425,19 +436,50 @@ public class DrillFieldJob extends BuildJob{
         public boolean overloaded(int k){ return loads[k] > beltCapacity + 0.05f; }
 
         @Override
-        public Seq<Port> ports(PortKind kind){ return kind == outKind ? outPorts : kind == waterKind ? waterPorts : new Seq<>(); }
+        public Seq<Port> ports(PortKind kind){
+            if(kind == outKind) return userOuts != null ? userOuts : outPorts;
+            if(kind == waterKind) return userWaters != null ? userWaters : waterPorts;
+            return new Seq<>();
+        }
+
+        /** world tile of the k-th planned water port's router */
+        public int[] waterPortTile(int k){ return waterTile(waterPorts.get(k)); }
+
+        /** load and line count of the i-th port the player picked: {items/s, lines with load} */
+        float[] userLoad(int i){
+            if(userOuts == null) return new float[]{i < loads.length ? (float)loads[i] : 0f, 1};
+            float load = 0;
+            int lines = 0;
+            for(int k = 0; k < loads.length && k < remote.outOwner.size; k++){
+                if(remote.outOwner.get(k) != i) continue;
+                load += loads[k];
+                if(loads[k] > 0.01f) lines++;
+            }
+            return new float[]{load, Math.max(1, lines)};
+        }
 
         @Override
         public boolean auto(PortKind kind){ return kind == outKind ? outAuto : waterAuto; }
 
         @Override
         public String portLabel(PortKind kind, int k){
-            if(kind != outKind || k >= loads.length) return null;
-            return Strings.autoFixed((float)loads[k], 1) + "/" + Strings.autoFixed(beltCapacity, 1) + " per s";
+            if(kind != outKind || (userOuts == null && k >= loads.length)) return null;
+            float[] l = userLoad(k);
+            String t = Strings.autoFixed(l[0], 1) + "/" + Strings.autoFixed(beltCapacity * l[1], 1) + " per s";
+            if(l[1] > 1) t += " (" + (int)l[1] + " lines)";
+            if(userOuts != null && unreached.contains(userOuts.get(k).name())) t += " [scarlet]no path[]";
+            return t;
         }
 
         @Override
-        public boolean portOk(PortKind kind, int k){ return kind != outKind || k >= loads.length || !overloaded(k); }
+        public boolean portOk(PortKind kind, int k){
+            if(kind != outKind) return true;
+            if(userOuts != null){
+                float[] l = userLoad(k);
+                return l[0] <= beltCapacity * l[1] + 0.05f && !unreached.contains(userOuts.get(k).name());
+            }
+            return k >= loads.length || !overloaded(k);
+        }
 
         @Override
         public String summary(){
@@ -467,6 +509,8 @@ public class DrillFieldJob extends BuildJob{
             sb.append(" items/s");
             for(int k = 0; k < loads.length; k++) if(overloaded(k)){ sb.append("\n[scarlet]Output ").append(k + 1).append(" exceeds ").append(belt.localizedName).append(" capacity: it will back up"); break; }
             if(excessFlow > 0.1f) sb.append(Strings.format("\n[orange]The field could add ~@/s with more outputs: use \"Add output\"", Strings.autoFixed(excessFlow, 1)));
+            if(remote != null && remote.any && remote.trunkTiles > 0) sb.append("\n[lightgray]Lines to the outputs / water away from the region: ").append(remote.trunkTiles).append(" tiles[]");
+            for(String u : unreached) sb.append("\n[scarlet]No free path to ").append(u).append(": connect that line yourself");
             if(planner.segmentsDropped > 0) sb.append("\n[orange]").append(planner.segmentsDropped).append(" lane(s) dropped: no route to an output");
             if(planner.drillsDroppedForPower > 0) sb.append("\n[orange]").append(planner.drillsDroppedForPower).append(" drill(s) dropped to fit power nodes");
             if(planner.powerGroups > 1) sb.append("\n[orange]Power nodes form ").append(planner.powerGroups).append(" separate groups: link them manually");
@@ -525,8 +569,9 @@ public class DrillFieldJob extends BuildJob{
         for(int i = 0; i < outPorts.size; i++){
             Building b = outPorts.get(i).existing;
             if(b == null) continue;
-            // every tile of the building counts as delivered
+            // every tile of the building counts as delivered (a sub-port: just its tile, one line each)
             int off = (b.block.size - 1) / 2, x0 = b.tile.x - off, y0 = b.tile.y - off, x1 = x0 + b.block.size - 1, y1 = y0 + b.block.size - 1;
+            if(outPorts.get(i).sub){ x0 = x1 = outPorts.get(i).x; y0 = y1 = outPorts.get(i).y; }
             int u0 = f.lu(x0, y0), v0 = f.lv(x0, y0), u1 = f.lu(x1, y1), v1 = f.lv(x1, y1);
             p.sinkRects[i] = new int[]{Math.min(u0, u1), Math.min(v0, v1), Math.max(u0, u1), Math.max(v0, v1)};
         }
@@ -619,6 +664,41 @@ public class DrillFieldJob extends BuildJob{
     }
 
     public Candidate search(Snapshot sn, int variantBase, int variants, Progress progress){
+        Seq<Port> outs = this.outs.isEmpty() ? this.outs : sn.remote.planOuts, waters = this.waters.isEmpty() ? this.waters : sn.remote.planWaters;
+        Candidate best = searchPorts(sn, outs, waters, variantBase, variants, progress);
+        if(best == null || !best.ok()) return best;
+        RemotePorts remote = sn.remote;
+        if(!this.outs.isEmpty()){
+            // several lines into one building: as many as its load needs (fewer trunks), if that loses nothing
+            int n = this.outs.size;
+            int[] used = new int[n], need = new int[n];
+            double[] load = new double[n];
+            for(int k = 0; k < best.loads.length && k < remote.outOwner.size; k++){ used[remote.outOwner.get(k)]++; load[remote.outOwner.get(k)] += best.loads[k]; }
+            boolean fewer = false;
+            for(int i = 0; i < n; i++){
+                need[i] = Math.max(1, (int)Math.ceil(load[i] / best.beltCapacity - 1e-3));
+                if(need[i] < used[i]) fewer = true;
+            }
+            if(fewer && best.excessFlow < 0.1f){
+                RemotePorts lim = remote.limit(need);
+                Candidate b2 = searchPorts(sn, lim.planOuts, waters, variantBase, variants, progress);
+                if(b2 != null && b2.ok() && b2.itemsPerSecond >= best.itemsPerSecond * 0.98f){ best = b2; remote = lim; }
+            }
+        }
+        // the player's ports, and the lines to those away from the region
+        if(!this.outs.isEmpty()) best.userOuts = new Seq<>(this.outs);
+        if(!this.waters.isEmpty() && !best.waterPorts.isEmpty()) best.userWaters = new Seq<>(this.waters);
+        best.remote = remote;
+        if(remote.any){
+            Seq<BuildPlan> lines = remote.route(best, 0.01f);
+            for(BuildPlan p : lines) best.signature.add("line" + p.x + "," + p.y + p.block.name);
+            best.plans.addAll(lines);
+            best.unreached.set(remote.unreached);
+        }
+        return best;
+    }
+
+    Candidate searchPorts(Snapshot sn, Seq<Port> outs, Seq<Port> waters, int variantBase, int variants, Progress progress){
         Candidate best = null, firstFail = null;
         Seq<Object[]> options = new Seq<>(); // {dir, outs}
         if(outs.isEmpty()){

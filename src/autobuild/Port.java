@@ -17,6 +17,8 @@ public class Port{
     public int x, y;
     /** an existing building (x,y = its tile) */
     public Building existing;
+    /** one tile of a big existing building (several lines go into it, one per such tile) */
+    public boolean sub;
 
     public static Port edge(int side, float frac){ Port p = new Port(); p.edge = true; p.side = side; p.frac = frac; return p; }
 

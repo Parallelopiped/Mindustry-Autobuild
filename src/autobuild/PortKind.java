@@ -22,6 +22,8 @@ public class PortKind{
     public final Seq<Port> picks = new Seq<>();
     /** may be picked anywhere on the map (outside the region), not just on / in it */
     public boolean anywhere;
+    /** with {@link #anywhere}: a click on / near the region still snaps to its edge or picks an inside tile */
+    public boolean snapNear;
 
     public PortKind(String name, String plural, Color color, boolean input, String edgeHelp, String interiorHelp, Func<Building, String> check){
         this.name = name; this.plural = plural; this.color = color; this.input = input;
@@ -30,6 +32,12 @@ public class PortKind{
 
     public PortKind anywhere(){
         anywhere = true;
+        return this;
+    }
+
+    /** anywhere on the map; on / near the region as before (edge or inside tile) */
+    public PortKind anywhereOrNear(){
+        anywhere = snapNear = true;
         return this;
     }
 

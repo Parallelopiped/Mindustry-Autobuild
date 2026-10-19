@@ -105,7 +105,9 @@ public class AutoBuildMod extends Mod{
             t.bottom().marginBottom(120f);
             t.table(Styles.black6, b -> {
                 b.label(() -> phase != State.pick ? "" : "Click tiles for the [accent]" + pickKind().plural + "[] (" + picks().size + " picked)\n"
-                    + "[lightgray]" + (pickKind().anywhere ? "Anywhere outside the region: " + pickKind().interiorHelp
+                    + "[lightgray]" + (pickKind().snapNear ? "On the border: " + pickKind().edgeHelp + ". Inside: " + pickKind().interiorHelp
+                        + ".\nFarther away (anywhere on the map): that tile, or your core / container / belt / router - a line is built to it"
+                        : pickKind().anywhere ? "Anywhere outside the region: " + pickKind().interiorHelp
                         : "On the border: " + pickKind().edgeHelp + ". Inside: " + pickKind().interiorHelp)
                     + "\nRight-click / Done: continue.  Auto: let the planner choose").pad(8f).row();
                 b.table(r -> {
@@ -195,7 +197,8 @@ public class AutoBuildMod extends Mod{
             case pick:
                 // inside the region: an interior port; on / near the border: snapped to the nearest edge
                 boolean near = tx >= job.ax - 3 && tx <= job.bx + 3 && ty >= job.ay - 3 && ty <= job.by + 3;
-                hover = pickKind().anywhere ? (world.tile(tx, ty) == null ? null : job.classifyAnywhere(tx, ty)) : near ? job.classify(tx, ty) : null;
+                PortKind pk = pickKind();
+                hover = pk.anywhere && !(pk.snapNear && near) ? (world.tile(tx, ty) == null ? null : job.classifyAnywhere(tx, ty)) : near ? job.classify(tx, ty) : null;
                 hoverValid = hover != null && portAllowed(hover);
                 if(Core.input.keyTap(KeyCode.escape)) reset();
                 else if(Core.input.keyTap(KeyCode.mouseRight)){ if(picks().isEmpty()) autoKind(); else finishKind(); }
