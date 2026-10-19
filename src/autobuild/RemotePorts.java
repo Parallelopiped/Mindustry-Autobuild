@@ -86,11 +86,13 @@ public class RemotePorts{
         r.liquidBridge = BuildJob.available(Blocks.bridgeConduit) ? Blocks.bridgeConduit : null;
         r.liquidBridgeRange = r.liquidBridge == null ? 0 : ((ItemBridge)r.liquidBridge).range;
         // the trunk grid: the region and every remote port, with room around
-        int x0 = job.ax - 4, y0 = job.ay - 4, x1 = job.bx + 4, y1 = job.by + 4;
+        // the region and the ports, with a wide margin: lines may have to go around rocks and buildings
+        int m = 24;
+        int x0 = job.ax - m, y0 = job.ay - m, x1 = job.bx + m, y1 = job.by + m;
         for(Port p : outs.copy().addAll(waters)){
             int[] t = job.portTile(p);
             int s = p.existing == null ? 1 : p.existing.block.size;
-            x0 = Math.min(x0, t[0] - s - 4); y0 = Math.min(y0, t[1] - s - 4); x1 = Math.max(x1, t[0] + s + 4); y1 = Math.max(y1, t[1] + s + 4);
+            x0 = Math.min(x0, t[0] - s - m); y0 = Math.min(y0, t[1] - s - m); x1 = Math.max(x1, t[0] + s + m); y1 = Math.max(y1, t[1] + s + m);
         }
         r.gx = Math.max(0, x0); r.gy = Math.max(0, y0);
         r.gw = Math.min(world.width() - 1, x1) - r.gx + 1; r.gh = Math.min(world.height() - 1, y1) - r.gy + 1;
@@ -136,6 +138,7 @@ public class RemotePorts{
             }
             r.outTarget.set(i, target);
             r.outLines.set(i, lines);
+            r.reach = r.flood(r.around(target), r.bridgeRange);
             for(Port e : r.edgePorts(target, lines)){ r.planOuts.add(e); r.outOwner.add(i); r.outRemote.add(true); }
         }
         if(liquidOn) for(int i = 0; i < waters.size; i++){
@@ -146,7 +149,13 @@ public class RemotePorts{
             r.waterStart.set(i, r.sourceStarts(p));
             int[] t = job.portTile(p);
             int s = p.existing == null ? 1 : p.existing.block.size;
-            for(Port e : r.edgePorts(new int[]{t[0], t[1], s}, 1)){ r.planWaters.add(e); r.waterOwner.add(i); r.waterRemote.add(true); }
+            Seq<int[]> from = new Seq<>();
+            for(int[] a : r.waterStart.get(i)) from.add(new int[]{a[0], a[1]});
+            r.reach = r.flood(from, r.liquidBridgeRange);
+            // never on an edge the output lines leave from: that side of the field is their collector
+            int avoid = 0;
+            for(Port o : r.planOuts) if(o.edge) avoid |= 1 << o.side;
+            for(Port e : r.edgePorts(new int[]{t[0], t[1], s}, 1, avoid)){ r.planWaters.add(e); r.waterOwner.add(i); r.waterRemote.add(true); }
         }
         return r;
     }
@@ -173,6 +182,48 @@ public class RemotePorts{
     }
 
     boolean inGrid(int x, int y){ return x >= gx && y >= gy && x < gx + gw && y < gy + gh; }
+
+    /** free tiles a line could reach from these world tiles (steps, and bridge jumps over anything): grid flags; null = no limit */
+    boolean[][] reach;
+
+    boolean[][] flood(Seq<int[]> from, int range){
+        boolean[][] seen = new boolean[gw][gh];
+        IntQueue q = new IntQueue();
+        for(int[] t : from){
+            if(!freeAt(t[0], t[1])) continue;
+            int u = t[0] - gx, v = t[1] - gy;
+            if(!seen[u][v]){ seen[u][v] = true; q.addLast(u * gh + v); }
+        }
+        while(q.size > 0){
+            int id = q.removeFirst(), u = id / gh, v = id % gh;
+            for(int d = 0; d < 4; d++){
+                for(int k = 1; k <= Math.max(1, range); k++){
+                    int nu = u + Geometry.d4x(d) * k, nv = v + Geometry.d4y(d) * k;
+                    if(nu < 0 || nv < 0 || nu >= gw || nv >= gh) break;
+                    if(!free[nu][nv] || seen[nu][nv]) continue;
+                    seen[nu][nv] = true;
+                    q.addLast(nu * gh + nv);
+                }
+            }
+        }
+        return seen;
+    }
+
+    /** free tiles next to a footprint {x, y, size} */
+    Seq<int[]> around(int[] t){
+        Seq<int[]> out = new Seq<>();
+        for(int i = -1; i <= t[2]; i++) for(int j = -1; j <= t[2]; j++){
+            boolean edge = (i == -1 || i == t[2]) != (j == -1 || j == t[2]);
+            if(edge) out.add(new int[]{t[0] + i, t[1] + j});
+        }
+        if(t[2] == 1 && freeAt(t[0], t[1])) out.add(new int[]{t[0], t[1]});
+        return out;
+    }
+
+    /** a line from this edge-output tile could reach the target */
+    boolean reachable(int x, int y){
+        return reach == null || (inGrid(x, y) && reach[x - gx][y - gy]);
+    }
 
     boolean freeAt(int x, int y){ return inGrid(x, y) && free[x - gx][y - gy]; }
 
@@ -214,15 +265,24 @@ public class RemotePorts{
      * `lines` edge outputs facing the target: on the side of the region nearest it, around its
      * projection, 3 apart; if that side has too few free spots, on the next sides.
      */
-    Seq<Port> edgePorts(int[] t, int lines){
+    Seq<Port> edgePorts(int[] t, int lines){ return edgePorts(t, lines, 0); }
+
+    /** as above, never on the sides in the `avoid` bit mask */
+    Seq<Port> edgePorts(int[] t, int lines, int avoid){
         float cx = t[0] + (t[2] - 1) / 2f, cy = t[1] + (t[2] - 1) / 2f;
         float[] beyond = {cx - bx, cy - by, ax - cx, ay - cy};
         Integer[] sides = {0, 1, 2, 3};
         Arrays.sort(sides, (a, b) -> Float.compare(beyond[b], beyond[a]));
+        if(avoid != 0 && avoid != 15){
+            // avoided sides last (never used unless nothing else exists)
+            Integer[] ok = Arrays.stream(sides).filter(x -> (avoid & (1 << x)) == 0).toArray(Integer[]::new);
+            sides = ok;
+        }
         Seq<Port> out = new Seq<>();
-        for(int si = 0; si < 3 && out.size < lines; si++){
+        for(int si = 0; si < 4 && out.size < lines; si++){
             int side = sides[si];
-            if(si > 0 && beyond[side] < -Math.max(bx - ax, by - ay) / 2f) break; // the far side: lines would wrap around the field
+            // the far side only when nothing nearer connects (lines would wrap around the field)
+            if(si > 0 && beyond[side] < -Math.max(bx - ax, by - ay) / 2f && !out.isEmpty()) break;
             boolean vertical = side % 2 == 0; // east / west edges run along y
             int lo = vertical ? ay : ax, hi = vertical ? by : bx;
             int center = Math.max(lo, Math.min(hi, Math.round(vertical ? cy : cx)));
@@ -237,7 +297,9 @@ public class RemotePorts{
                 for(int j = 0; j < taken.size; j++) if(Math.abs(taken.get(j) - pos) < 2) close = true;
                 if(close) continue;
                 int ex = vertical ? (side == 0 ? bx : ax) : pos, ey = vertical ? pos : (side == 1 ? by : ay);
-                if(!freeAt(ex + Geometry.d4x(side), ey + Geometry.d4y(side))) continue;
+                if(!freeAt(ex + Geometry.d4x(side), ey + Geometry.d4y(side)) || !reachable(ex + Geometry.d4x(side), ey + Geometry.d4y(side))) continue;
+                // not in the corner of an avoided side either (the corner tile belongs to both edges)
+                if(nearAvoided(ex, ey, avoid)) continue;
                 taken.add(pos);
                 out.add(Port.edge(side, hi == lo ? 0.5f : (pos - lo) / (float)(hi - lo)));
             }
@@ -247,6 +309,11 @@ public class RemotePorts{
             out.add(Port.edge(side, 0.5f));
         }
         return out;
+    }
+
+    /** within 2 tiles of an edge in the `avoid` mask */
+    boolean nearAvoided(int x, int y, int avoid){
+        return (avoid & 1) != 0 && bx - x < 2 || (avoid & 2) != 0 && by - y < 2 || (avoid & 4) != 0 && x - ax < 2 || (avoid & 8) != 0 && y - ay < 2;
     }
 
     /** where a water line starts at a remote source: {x, y, from} */
@@ -278,6 +345,15 @@ public class RemotePorts{
         trunkTiles = 0;
         Seq<BuildPlan> out = new Seq<>();
         boolean[][] used = new boolean[gw][gh];
+        // water
+        for(int k = 0; k < c.waterPorts.size && k < waterRemote.size; k++){
+            if(!waterRemote.get(k)) continue;
+            int owner = waterOwner.get(k);
+            int[] w = c.waterPortTile(k);
+            List<Start> st = new ArrayList<>();
+            for(int[] a : waterStart.get(owner)) if(inGrid(a[0], a[1])) st.add(new Start(a[0] - gx, a[1] - gy, a[2], 0, false));
+            if(!line(st, new int[]{w[0], w[1], 1}, used, true, out)) unreached.add(c.userWaters.get(owner).name());
+        }
         // items
         for(int k = 0; k < c.outPorts.size && k < outRemote.size; k++){
             if(!outRemote.get(k) || k >= c.loads.length || c.loads[k] < minLoad) continue;
@@ -288,15 +364,6 @@ public class RemotePorts{
             List<Start> st = new ArrayList<>();
             if(inGrid(s[0], s[1])) st.add(new Start(s[0] - gx, s[1] - gy, (e.side + 2) % 4, 0, false));
             if(!line(st, t, used, false, out)) unreached.add(c.userOuts.get(owner).name());
-        }
-        // water
-        for(int k = 0; k < c.waterPorts.size && k < waterRemote.size; k++){
-            if(!waterRemote.get(k)) continue;
-            int owner = waterOwner.get(k);
-            int[] w = c.waterPortTile(k);
-            List<Start> st = new ArrayList<>();
-            for(int[] a : waterStart.get(owner)) if(inGrid(a[0], a[1])) st.add(new Start(a[0] - gx, a[1] - gy, a[2], 0, false));
-            if(!line(st, new int[]{w[0], w[1], 1}, used, true, out)) unreached.add(c.userWaters.get(owner).name());
         }
         return out;
     }

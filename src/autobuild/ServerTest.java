@@ -41,7 +41,7 @@ public class ServerTest{
             int size = 30;
             Block belt = Blocks.conveyor, conduit = Blocks.conduit;
             boolean bridges = true, mix = true, water = false;
-            int existing = 0;
+            int existing = 0, another = 0;
             String waterSpec = "auto";
             // a variadic "[options...]" parameter arrives as one space-joined string
             Seq<String> opts = new Seq<>();
@@ -56,6 +56,7 @@ public class ServerTest{
                     case "nomix": mix = false; break;
                     case "water": water = true; waterSpec = kv[1]; break;
                     case "existing": existing = Strings.parseInt(kv[1], 0); break;
+                    case "another": another = Strings.parseInt(kv[1], 0); break;
                     default: Log.err("unknown option @", opt); return;
                 }
             }
@@ -100,6 +101,12 @@ public class ServerTest{
             }
             DrillFieldJob.Snapshot sn = job.prepare();
             DrillFieldJob.Candidate cand = sn == null ? null : job.search(sn, 0, 3, null);
+            // "Another plan": a fresh snapshot and one more variant each time, like the UI
+            for(int v = 3; v < 3 + another && cand != null; v++){
+                DrillFieldJob.Snapshot s2 = job.prepare();
+                DrillFieldJob.Candidate c2 = job.search(s2, v, 1, null);
+                Log.info("[abtest] another plan @: @ | @", v, c2 == null ? "-" : Strings.stripColors(c2.summary()).replace('\n', ' '), c2 == null ? "" : c2.portText());
+            }
             if(cand == null || !cand.ok()){
                 Log.err("[abtest] plan failed: @", cand == null ? job.error : cand.error);
                 // world-oriented dump: 'W' wall, '#' otherwise unbuildable, 'o' target ore, '+' other ore, '~' deep, 'B' building

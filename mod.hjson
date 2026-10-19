@@ -3,6 +3,6 @@ name: "autobuild"
 author: "Maiolao"
 main: "autobuild.AutoBuildMod"
 description: "Select a region and auto-build a drill field or a defense on the enemy route: click (or auto-pick) the ports, preview the plan, try alternatives, then build."
-version: "1.3.1"
+version: "1.3.2"
 minGameVersion: 160
 java: true

@@ -7,6 +7,19 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-19
+### Fixed
+- Drill field with water from outside the region: "Another plan" lost the water. The remote water
+  port could land on the edge (or a corner of it) the output lines leave from, where water can't
+  enter the field; the first search hid it by falling back to an automatic water port. Water
+  ports now avoid the output edges and their corners, and variants keep the player's water ports.
+- When the water network is skipped, the summary says so again.
+- Lines to ports outside the region: "no free path" in complex terrain although there is one. The
+  grid for these lines now reaches 24 tiles beyond the region and the ports (room to go around
+  rocks), edge outputs are only put where the target can be reached from, and the water line is
+  laid first (output lines can't block it).
+- Server test: `another=N` plans N more variants like "Another plan".
+
 ## [1.3.1] - 2026-10-19
 ### Fixed
 - Drill field with water: empty drill spots right next to planned belts / water lines. Gap
@@ -274,6 +287,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.2]: #
 [1.3.1]: #
 [1.3.0]: #
 [1.2.1]: #

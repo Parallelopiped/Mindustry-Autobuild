@@ -372,6 +372,8 @@ public class DrillFieldJob extends BuildJob{
         /** player ports no line could reach */
         public final Seq<String> unreached = new Seq<>();
         public boolean outAuto, waterAuto;
+        /** water was wanted but the network couldn't beat a layout without it */
+        public boolean waterSkipped;
         /** per output: world tile the items go into, items/s delivered */
         public int[][] sinkWorld = new int[0][];
         public double[] loads = new double[0];
@@ -492,7 +494,7 @@ public class DrillFieldJob extends BuildJob{
             }
             sb.append(Tr.t("drill.sum", kinds, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
             sb.append(" [lightgray](").append(Tr.layout(planner.layout)).append(")[]");
-            if(water() && planner.waterSkipped){
+            if(waterSkipped){
                 sb.append("\n").append(Tr.t("drill.waterSkipped"));
             }else if(water()){
                 sb.append("\n").append(Tr.t("drill.wet", planner.wetDrills, planner.drills,
@@ -647,7 +649,7 @@ public class DrillFieldJob extends BuildJob{
         }
         c.loads = planner.sinkLoad.clone();
         c.excessFlow = (float)planner.excessFlow;
-        if(waterPorts.size > 0 && planner.waterSkipped) c.waterPorts = new Seq<>();
+        if(waterPorts.size > 0 && planner.waterSkipped){ c.waterPorts = new Seq<>(); c.waterSkipped = true; }
         return c;
     }
 
@@ -728,7 +730,10 @@ public class DrillFieldJob extends BuildJob{
         if(best != null){
             Candidate b = best;
             for(int v = variantBase + 1; v < variantBase + variants; v++){
-                Candidate c = plan(sn, b.outDir, b.outPorts, b.waterPorts.isEmpty() && sn.waterOn ? Seq.with(Port.edge((b.outDir + 2) % 4, 0.5f)) : b.waterPorts, v, progress);
+                // the player's water ports stay (a variant that couldn't use them shows "water skipped")
+                Seq<Port> wv = !sn.waterOn ? new Seq<>() : !waters.isEmpty() ? new Seq<>(waters)
+                    : b.waterPorts.isEmpty() ? Seq.with(Port.edge((b.outDir + 2) % 4, 0.5f)) : b.waterPorts;
+                Candidate c = plan(sn, b.outDir, b.outPorts, wv, v, progress);
                 c.outAuto = b.outAuto; c.waterAuto = b.waterAuto;
                 if(c.ok() && c.score() > best.score()) best = c;
             }
