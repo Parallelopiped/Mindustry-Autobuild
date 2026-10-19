@@ -24,6 +24,7 @@ public class PlannerTest{
         fails += outputsAndCapacity();
         fails += existingPorts();
         mixGain();
+        efficiencyGap();
         logisticsEfficiency();
         compare();
         System.out.println(fails == 0 ? "ALL OK" : fails + " FAILED");
@@ -573,6 +574,30 @@ public class PlannerTest{
                 if(ob < oa * 0.99) worse++;
             }
             System.out.printf("mix s=%d: output %+.1f%% over %d maps (better on %d, worse on %d)%n", s, 100 * (mixed / base - 1), n, better, worse);
+        }
+    }
+
+    /**
+     * Material efficiency vs max output on multi-patch fields with filler drills: output share and
+     * drill area per output (lower = less material per item).
+     */
+    static void efficiencyGap(){
+        for(int s = 2; s <= 4; s++){
+            double out = 0, eff = 0, areaOut = 0, areaEff = 0;
+            int n = 0, fillersEff = 0;
+            for(int seed = 0; seed < 120; seed++){
+                Map m = randomMap(seed, s);
+                Params a = params(m, s, Mode.OUTPUT, false, true), b = params(m, s, Mode.EFFICIENCY, false, true);
+                addTypes(a, m, s, false); addTypes(b, m, s, false);
+                DrillLayoutPlanner pa = new DrillLayoutPlanner(a), pb = new DrillLayoutPlanner(b);
+                if(!pa.plan() || !pb.plan()) continue;
+                out += output(pa, a.typeRate); eff += output(pb, b.typeRate);
+                for(Place pl : pa.places) if(pl.kind == DrillLayoutPlanner.DRILL) areaOut += a.typeSize[pl.type] * a.typeSize[pl.type];
+                for(Place pl : pb.places) if(pl.kind == DrillLayoutPlanner.DRILL){ areaEff += b.typeSize[pl.type] * b.typeSize[pl.type]; if(pl.type > 0) fillersEff++; }
+                n++;
+            }
+            System.out.printf("efficiency s=%d: output %.1f%% of max output, drill area per output %.2f (max output %.2f), %d fillers, %d maps%n",
+                s, 100 * eff / out, areaEff / eff, areaOut / out, fillersEff, n);
         }
     }
 

@@ -7,6 +7,14 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-19
+### Changed
+- **Material efficiency mode mines more**: any drill (fillers included) is worth placing when at
+  least half of it is on ore; the threshold scales with the drill's own speed, so smaller, slower
+  fillers fill the gaps again (before, they practically never paid off). Over 120 random
+  multi-patch fields: output 83 -> 91% (2x2), 85 -> 88% (3x3), 77 -> 83% (4x4) of max output,
+  still with 20-25% less drill area per item than max output.
+
 ## [1.2.0] - 2026-10-19
 ### Added
 - **Drill field ports anywhere on the map**: item outputs and water inputs can be clicked away from
@@ -251,6 +259,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.2.1]: #
 [1.2.0]: #
 [1.1.0]: #
 [1.0.0]: #

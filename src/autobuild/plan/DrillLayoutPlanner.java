@@ -846,8 +846,9 @@ public class DrillLayoutPlanner{
         if(u < 0 || v < 0 || v + st > H || u + st > W - 1) return 0;
         int o = ore[ty][u][v];
         if(o == 0 || masked(u, v, st)) return 0;
-        // efficiency: a drill must sit mostly on ore to be worth its cost
-        double val = (p.mode == Mode.OUTPUT ? o * rate[ty] - 0.01 : o * rate[ty] - 0.5 * st * st) - oreTileValue() * otherOreUnder(u, v, st);
+        // efficiency: worth its cost when at least half of it is on ore - for every drill type, so the
+        // threshold scales with its own speed (a slower filler isn't held to the big drill's yield)
+        double val = (p.mode == Mode.OUTPUT ? o * rate[ty] - 0.01 : rate[ty] * (o - halfArea(st))) - oreTileValue() * otherOreUnder(u, v, st);
         return val > 0 ? val * noiseAt(u, v) : val;
     }
 
@@ -866,13 +867,16 @@ public class DrillLayoutPlanner{
     }
 
     /** Value of a drill that gets water (if `wet`), or the plain value. */
+    /** efficiency mode: ore tiles a drill needs to break even - just under half its area, so exactly half pays */
+    static double halfArea(int st){ return 0.5 * st * st - 0.25; }
+
     double drillValue(int u, int v, boolean wet){ return drillValue(0, u, v, wet); }
 
     double drillValue(int ty, int u, int v, boolean wet){
         double base = drillValue(ty, u, v);
         if(!wet || base <= 0) return base;
         int o = ore[ty][u][v], st = sz[ty];
-        double val = (p.mode == Mode.OUTPUT ? o * rate[ty] * p.waterBoost - 0.01 : o * rate[ty] * p.waterBoost - 0.5 * st * st - 0.5)
+        double val = (p.mode == Mode.OUTPUT ? o * rate[ty] * p.waterBoost - 0.01 : rate[ty] * (o * p.waterBoost - halfArea(st) - 0.5))
             - oreTileValue() * otherOreUnder(u, v, st);
         return val * noiseAt(u, v);
     }
