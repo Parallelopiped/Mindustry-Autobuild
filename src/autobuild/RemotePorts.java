@@ -86,16 +86,12 @@ public class RemotePorts{
         r.liquidBridge = BuildJob.available(Blocks.bridgeConduit) ? Blocks.bridgeConduit : null;
         r.liquidBridgeRange = r.liquidBridge == null ? 0 : ((ItemBridge)r.liquidBridge).range;
         // the trunk grid: the region and every remote port, with room around
-        // the region and the ports, with a wide margin: lines may have to go around rocks and buildings
-        int m = 24;
-        int x0 = job.ax - m, y0 = job.ay - m, x1 = job.bx + m, y1 = job.by + m;
-        for(Port p : outs.copy().addAll(waters)){
-            int[] t = job.portTile(p);
-            int s = p.existing == null ? 1 : p.existing.block.size;
-            x0 = Math.min(x0, t[0] - s - m); y0 = Math.min(y0, t[1] - s - m); x1 = Math.max(x1, t[0] + s + m); y1 = Math.max(y1, t[1] + s + m);
-        }
-        r.gx = Math.max(0, x0); r.gy = Math.max(0, y0);
-        r.gw = Math.min(world.width() - 1, x1) - r.gx + 1; r.gh = Math.min(world.height() - 1, y1) - r.gy + 1;
+        // the whole map: a line may have to follow corridors far away from the region and the port
+        // (only when a port is away from the region: it is computed on the main thread)
+        boolean anyRemote = outs.contains(r::remote) || liquidOn && waters.contains(r::remote);
+        long t0 = arc.util.Time.millis();
+        r.gx = 0; r.gy = 0;
+        r.gw = anyRemote ? world.width() : 1; r.gh = anyRemote ? world.height() : 1;
         r.free = new boolean[r.gw][r.gh];
         r.nearItems = new boolean[r.gw][r.gh];
         r.nearLiquids = new boolean[r.gw][r.gh];
@@ -109,6 +105,7 @@ public class RemotePorts{
             }
         }
 
+        if(anyRemote) arc.util.Log.info("[autobuild] line grid @x@ in @ms", r.gw, r.gh, arc.util.Time.timeSinceMillis(t0));
         for(int i = 0; i < outs.size; i++){
             Port p = outs.get(i);
             Building b = p.existing;

@@ -42,6 +42,7 @@ public class ServerTest{
             Block belt = Blocks.conveyor, conduit = Blocks.conduit;
             boolean bridges = true, mix = true, water = false;
             int existing = 0, another = 0;
+            String regionAt = null;
             String waterSpec = "auto";
             // a variadic "[options...]" parameter arrives as one space-joined string
             Seq<String> opts = new Seq<>();
@@ -57,6 +58,7 @@ public class ServerTest{
                     case "water": water = true; waterSpec = kv[1]; break;
                     case "existing": existing = Strings.parseInt(kv[1], 0); break;
                     case "another": another = Strings.parseInt(kv[1], 0); break;
+                    case "region": regionAt = kv[1]; break;
                     default: Log.err("unknown option @", opt); return;
                 }
             }
@@ -68,7 +70,11 @@ public class ServerTest{
             job.bridges = bridges;
             job.mixDrills = mix;
             job.water = water; job.conduit = conduit;
-            if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
+            if(regionAt != null){
+                // a fixed region: its lower left corner
+                String[] xy = regionAt.split(":");
+                job.ax = Strings.parseInt(xy[0]); job.ay = Strings.parseInt(xy[1]); job.bx = job.ax + size - 1; job.by = job.ay + size - 1;
+            }else if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             existingPorts.clear();
             if(!parsePorts(job, args[2], job.outs) || !parsePorts(job, waterSpec, job.waters)){ Log.err("bad port list"); return; }
             for(Port pt : job.outs){
@@ -206,6 +212,18 @@ public class ServerTest{
             predicted = 0f;
             for(int k = 0; k < cand.loads.length; k++) predicted += Math.min((float)cand.loads[k], cand.beltCapacity);
             Log.info("[abtest] placed @ blocks, @ output(s), predicted @/s total", cand.plans.size, vaults.size, Strings.autoFixed(predicted, 2));
+        });
+
+        handler.register("abmap", "[step]", "AutoBuild: the map, downsampled ('#' solid, '~' deep, 'o' ore, '.' open)", args -> {
+            int st = args.length > 0 ? Strings.parseInt(args[0], 4) : 4;
+            for(int y = world.height() - 1; y >= 0; y -= st){
+                StringBuilder sb = new StringBuilder();
+                for(int x = 0; x < world.width(); x += st){
+                    Tile t = world.tile(x, y);
+                    sb.append(t.solid() ? '#' : t.floor().isDeep() ? '~' : t.drop() == Items.copper ? 'o' : '.');
+                }
+                Log.info("[abmap] @ @", Strings.format("%3d", y), sb);
+            }
         });
 
         handler.register("abtile", "<x> <y> [radius]", "AutoBuild: describe tiles around (x,y)", args -> {

@@ -7,6 +7,14 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-10-19
+### Fixed
+- Lines to ports outside the region found no path along long, winding ways (e.g. Maze: field in
+  one corridor, output in another). They are now routed over the whole map (A* with a distance
+  estimate that accounts for bridges, so routes stay the cheapest); the map grid is only built
+  when a port is away from the region (Maze 256x256: 17 ms).
+- Server test: `region=x:y` places the field there; `abmap [step]` prints the map.
+
 ## [1.3.2] - 2026-10-19
 ### Fixed
 - Drill field with water from outside the region: "Another plan" lost the water. The remote water
@@ -287,6 +295,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.3]: #
 [1.3.2]: #
 [1.3.1]: #
 [1.3.0]: #

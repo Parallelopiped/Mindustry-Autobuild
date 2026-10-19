@@ -99,14 +99,16 @@ public class GridRouter{
             if(total < cost[i]){
                 cost[i] = total;
                 startOf[s.u * H + s.v] = s;
-                q.add(new double[]{total, i});
+                q.add(new double[]{total + h(s.u, s.v, tu, tv, ts), i});
             }
         }
         while(!q.isEmpty()){
             double[] cur = q.poll();
             int i = (int)cur[1];
-            if(cur[0] > cost[i]) continue;
             int m = i % M, t = i / M, u = t / H, v = t % H;
+            // A*: the entry's estimate is its cost so far plus the distance estimate; a stale entry has a larger one
+            double g = cost[i];
+            if(cur[0] > g + h(u, v, tu, tv, ts) + 1e-9) continue;
             Start st = prev[i] < 0 ? startOf[t] : null;
             boolean source = st != null && st.source;
             int a = m < 4 ? m : m < 8 ? m - 4 : -1;
@@ -129,9 +131,9 @@ public class GridRouter{
                 if(outOk && in(nu, nv) && !banned.contains(nu * H + nv)){
                     double c = grid.tileCost(nu, nv);
                     if(c >= 0){
-                        double nc = cur[0] + c + (a >= 0 && d != a && !landed ? turnCost : 0);
+                        double nc = g + c + (a >= 0 && d != a && !landed ? turnCost : 0);
                         int ni = id(nu, nv, d);
-                        if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(new double[]{nc, ni}); }
+                        if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(new double[]{nc + h(nu, nv, tu, tv, ts), ni}); }
                     }
                 }
                 // bridge jump (not from the source block)
@@ -142,12 +144,25 @@ public class GridRouter{
                     if(banned.contains(lu * H + lv)) continue;
                     double c = grid.tileCost(lu, lv);
                     if(c < 0) continue;
-                    double nc = cur[0] + c + bridgeCost;
+                    double nc = g + c + bridgeCost;
                     int ni = id(lu, lv, 4 + d);
-                    if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(new double[]{nc, ni}); }
+                    if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(new double[]{nc + h(lu, lv, tu, tv, ts), ni}); }
                 }
             }
         }
+    }
+
+    /**
+     * Distance estimate to the target footprint (A*): steps still needed to stand next to it, at
+     * the cheapest cost per tile - a bridge covers up to `bridgeRange` tiles for its jump cost plus
+     * a landing tile, and tile costs are at least 1 - so it never overestimates. 0 without a target.
+     */
+    double h(int u, int v, int tu, int tv, int ts){
+        if(ts <= 0) return 0;
+        int dx = Math.max(0, Math.max(tu - u, u - (tu + ts - 1))), dy = Math.max(0, Math.max(tv - v, v - (tv + ts - 1)));
+        int steps = Math.max(0, dx + dy - 1);
+        double perTile = bridgeRange >= 2 ? Math.min(1, (bridgeCost + 1) / bridgeRange) : 1;
+        return steps * perTile;
     }
 
     /**
