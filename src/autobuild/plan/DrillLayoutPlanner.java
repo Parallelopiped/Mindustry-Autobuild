@@ -283,6 +283,7 @@ public class DrillLayoutPlanner{
                 if(best == null || sub.score > best.score) best = sub;
             }else if(firstFail == null) firstFail = sub;
         }
+        chosen = best;
         if(best == null){ if(firstFail != null){ failure = firstFail.failure; failureKey = firstFail.failureKey; failureArgs = firstFail.failureArgs; } return false; }
         places.clear(); places.addAll(best.places);
         drills = best.drills; wetDrills = best.wetDrills; waterTiles = best.waterTiles; oreTiles = best.oreTiles; nodes = best.nodes;
@@ -376,6 +377,9 @@ public class DrillLayoutPlanner{
             Arrays.fill(sinkLoad, 0);
             for(Feeder f : feeders) if(f.sink >= 0) for(int[] d : f.drills) sinkLoad[f.sink] += flowOf(d);
         }
+        // gap filling again: lines planned for watered drills may have room now (drills the water
+        // network didn't reach carry less), and spots left by the water network are known
+        if(useWater) fillGaps();
         noise = false;
 
         boolean anyPowered = false;
@@ -421,6 +425,46 @@ public class DrillLayoutPlanner{
      * A routed belt (any side but its front) or linked bridge (any side but its link side) next to the
      * footprint takes its output. Returns that line's output index if it has room for `flow`, else -1.
      */
+    /** the family's planner that won (planAuto), for diagnostics */
+    public DrillLayoutPlanner chosen;
+
+    /**
+     * Diagnostics: free drill spots worth a drill (by the mode's value) that touch the item network,
+     * and why gap filling left them: "full" (that line has no room), "side" (only touches blocks
+     * that don't take items from there), "missed" (it should have been filled).
+     */
+    public List<String> missedSpots(){
+        DrillLayoutPlanner q = chosen != null ? chosen : this;
+        List<String> out = new ArrayList<>();
+        boolean[][] taken = new boolean[W][H];
+        for(int[] c : q.candidates()){
+            int ty = c[0], u = c[1], v = c[2], st = q.sz[ty];
+            if(!q.footprintFree(u, v, st)) continue;
+            boolean overlap = false;
+            for(int x = u; x < u + st && !overlap; x++) for(int y = v; y < v + st; y++) if(taken[x][y]) overlap = true;
+            if(overlap) continue;
+            double flow = q.flowOf(new int[]{u, v, 0, ty});
+            boolean touches = false, full = false;
+            for(int i = 0; i < st; i++){
+                int[][] adj = {{u + st, v + i, 2}, {u - 1, v + i, 0}, {u + i, v + st, 3}, {u + i, v - 1, 1}};
+                for(int[] a : adj){
+                    int x = a[0], y = a[1];
+                    if(x < 0 || y < 0 || x >= W || y >= H) continue;
+                    boolean net = q.occ[x][y] >= 0 || q.occ[x][y] == OBRIDGE;
+                    if(!net) continue;
+                    touches = true;
+                    boolean takes = q.occ[x][y] >= 0 || (q.bridgeLink[x][y] >= 0 && q.bridgeLink[x][y] != a[2]);
+                    if(takes && !q.fits(q.sinkOf[x][y], flow, true)) full = true;
+                }
+            }
+            if(!touches) continue;
+            for(int x = u; x < u + st; x++) for(int y = v; y < v + st; y++) taken[x][y] = true;
+            int k = q.touchesNetwork(u, v, st, flow);
+            out.add((k >= 0 ? "missed" : full ? "full" : "side") + " type " + ty + " at " + u + "," + v + " ore " + q.ore[ty][u][v]);
+        }
+        return out;
+    }
+
     int touchesNetwork(int u, int v, int st, double flow){
         for(int i = 0; i < st; i++){
             int[][] adj = {{u + st, v + i, 2}, {u - 1, v + i, 0}, {u + i, v + st, 3}, {u + i, v - 1, 1}}; // {x, y, direction from the tile to the drill}

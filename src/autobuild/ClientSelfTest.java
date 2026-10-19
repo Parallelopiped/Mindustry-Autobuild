@@ -93,6 +93,12 @@ public class ClientSelfTest{
                     job.conduit = Blocks.conduit;
                     Log.info("[selftest] region (@,@)-(@,@), output @, water @", job.ax, job.ay, job.bx, job.by, autoPorts ? "auto" : "East (clicked)", water ? "auto" : "off");
                     mod.startPicking();
+                    // clicks the player can make: on the edge, inside the region, far away on open ground
+                    int cx = (job.ax + job.bx) / 2, cy = (job.ay + job.by) / 2;
+                    Port edgeP = job.classify(job.bx + 1, cy), insideP = job.classify(cx, cy);
+                    if(!mod.portAllowed(edgeP) || !edgeP.edge){ fail("edge output refused: " + mod.hoverReasonFor(edgeP)); return; }
+                    if(!mod.portAllowed(insideP) || insideP.edge){ fail("inside output refused: " + mod.hoverReasonFor(insideP)); return; }
+                    Log.info("[selftest] edge and inside output picks accepted");
                     // what a click on the east edge / right-clicks do
                     if(autoPorts) mod.autoKind();
                     else{

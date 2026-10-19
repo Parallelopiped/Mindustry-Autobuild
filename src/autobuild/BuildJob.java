@@ -111,9 +111,10 @@ public abstract class BuildJob{
 
     /** why a port picked for this kind can't be used (besides the building check), or null */
     public String portError(PortKind kind, Port p){
-        if(!kind.anywhere || p.existing != null) return null;
+        // edges, existing buildings and the usual inside / near-region picks are checked elsewhere
+        if(!kind.anywhere || p.existing != null || p.edge) return null;
         if(world.tile(p.x, p.y) == null) return Tr.t("port.outsideMap");
-        if(inRegion(p.x, p.y)) return Tr.t("port.notInRegion");
+        if(inRegion(p.x, p.y)) return kind.snapNear ? null : Tr.t("port.notInRegion");
         if(!empty(p.x, p.y) || world.tile(p.x, p.y).solid()) return Tr.t("port.taken");
         return null;
     }

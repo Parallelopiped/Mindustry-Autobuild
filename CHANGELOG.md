@@ -7,6 +7,14 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-19
+### Fixed
+- Drill field with water: empty drill spots right next to planned belts / water lines. Gap
+  filling ran while every drill was still assumed watered (lines looked full); it now runs again
+  once the water network is built.
+- Drill field: output / water ports could only be picked outside the region (since 1.2.0); the
+  border and inside tiles work again, and far-away picks too.
+
 ## [1.3.0] - 2026-10-19
 ### Added
 - **Simplified Chinese**: every text of the mod (buttons, dialogs, prompts, summaries, warnings,
@@ -266,6 +274,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.1]: #
 [1.3.0]: #
 [1.2.1]: #
 [1.2.0]: #

@@ -229,6 +229,15 @@ public class AutoBuildMod extends Mod{
         }
     }
 
+    /** why a pick would be refused (tests) */
+    String hoverReasonFor(Port p){
+        Port h = hover;
+        hover = p;
+        String r = portAllowed(p) ? "-" : hoverReason();
+        hover = h;
+        return r;
+    }
+
     String hoverReason(){
         String e = hover == null ? null : pickKind().error(hover);
         if(e == null && hover != null) e = job.portError(pickKind(), hover);
