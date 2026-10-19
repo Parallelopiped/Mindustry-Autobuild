@@ -98,24 +98,23 @@ public class AutoBuildMod extends Mod{
     void buildHud(){
         ui.hudGroup.fill(t -> {
             t.bottom().left().marginBottom(120f);
-            t.button("AutoBuild", this::toggle).size(110f, 40f).visible(() -> phase == State.idle || phase == State.select);
+            t.button(Tr.t("button"), this::toggle).size(110f, 40f).visible(() -> phase == State.idle || phase == State.select);
         });
         // port picking
         ui.hudGroup.fill(t -> {
             t.bottom().marginBottom(120f);
             t.table(Styles.black6, b -> {
-                b.label(() -> phase != State.pick ? "" : "Click tiles for the [accent]" + pickKind().plural + "[] (" + picks().size + " picked)\n"
-                    + "[lightgray]" + (pickKind().snapNear ? "On the border: " + pickKind().edgeHelp + ". Inside: " + pickKind().interiorHelp
-                        + ".\nFarther away (anywhere on the map): that tile, or your core / container / belt / router - a line is built to it"
-                        : pickKind().anywhere ? "Anywhere outside the region: " + pickKind().interiorHelp
-                        : "On the border: " + pickKind().edgeHelp + ". Inside: " + pickKind().interiorHelp)
-                    + "\nRight-click / Done: continue.  Auto: let the planner choose").pad(8f).row();
+                b.label(() -> phase != State.pick ? "" : Tr.t("pick.title", pickKind().plural(), picks().size) + "\n"
+                    + "[lightgray]" + (pickKind().snapNear ? Tr.t("pick.near", pickKind().edgeHelp(), pickKind().interiorHelp()) + "\n" + Tr.t("pick.far")
+                        : pickKind().anywhere ? Tr.t("pick.anywhere", pickKind().interiorHelp())
+                        : Tr.t("pick.near", pickKind().edgeHelp(), pickKind().interiorHelp()))
+                    + "\n" + Tr.t("pick.keys")).pad(8f).row();
                 b.table(r -> {
                     r.defaults().size(130f, 44f);
-                    r.button("Done", Icon.ok, this::finishKind).disabled(x -> picks().isEmpty());
-                    r.button("Auto", Icon.refresh, this::autoKind);
-                    r.button("Undo", Icon.undo, () -> { if(!picks().isEmpty()) picks().pop(); }).disabled(x -> picks().isEmpty());
-                    r.button("Cancel", Icon.cancel, this::reset);
+                    r.button(Tr.t("btn.done"), Icon.ok, this::finishKind).disabled(x -> picks().isEmpty());
+                    r.button(Tr.t("btn.auto"), Icon.refresh, this::autoKind);
+                    r.button(Tr.t("btn.undo"), Icon.undo, () -> { if(!picks().isEmpty()) picks().pop(); }).disabled(x -> picks().isEmpty());
+                    r.button(Tr.t("btn.cancel"), Icon.cancel, this::reset);
                 });
             }).visible(() -> phase == State.pick);
         });
@@ -123,9 +122,9 @@ public class AutoBuildMod extends Mod{
         ui.hudGroup.fill(t -> {
             t.bottom().marginBottom(120f);
             t.table(Styles.black6, b -> {
-                b.label(() -> (phase == State.planning ? "Planning: " : "Replay: ") + stage).padLeft(10f).padRight(10f).minWidth(300f);
-                b.button("Skip", Icon.right, () -> { if(phase == State.playback) phase = State.preview; }).size(110f, 44f).visible(() -> phase == State.playback);
-                b.button("Cancel", Icon.cancel, this::cancelPlanning).size(110f, 44f);
+                b.label(() -> (phase == State.planning ? Tr.t("planning") : Tr.t("replay")) + stage).padLeft(10f).padRight(10f).minWidth(300f);
+                b.button(Tr.t("btn.skip"), Icon.right, () -> { if(phase == State.playback) phase = State.preview; }).size(110f, 44f).visible(() -> phase == State.playback);
+                b.button(Tr.t("btn.cancel"), Icon.cancel, this::cancelPlanning).size(110f, 44f);
             }).visible(() -> phase == State.planning || phase == State.playback);
         });
         // preview (top of the screen, so the region and its south side stay visible)
@@ -133,19 +132,19 @@ public class AutoBuildMod extends Mod{
             t.top().left().marginTop(130f).marginLeft(10f);
             t.table(Styles.black6, b -> {
                 b.label(() -> current() == null ? "" : current().summary()).pad(6f).left().wrap().width(640f).row();
-                b.label(() -> current() == null ? "" : "[lightgray]" + current().portText() + "   Plan " + (shown + 1) + "/" + variants.size
-                    + (isBest(shown) ? " [green](best)" : "") + "   score " + Strings.autoFixed((float)current().score(), 1)).pad(4f).left().row();
+                b.label(() -> current() == null ? "" : "[lightgray]" + current().portText() + Tr.t("planLine", shown + 1, variants.size)
+                    + (isBest(shown) ? Tr.t("best") : "") + Tr.t("score", Strings.autoFixed((float)current().score(), 1))).pad(4f).left().row();
                 b.table(r -> {
                     r.defaults().size(118f, 44f);
-                    r.button("Build", Icon.ok, this::commit);
-                    r.button("Another plan", Icon.refresh, this::anotherPlan).size(170f, 44f).tooltip("Search again with different preferences");
+                    r.button(Tr.t("btn.build"), Icon.ok, this::commit);
+                    r.button(Tr.t("btn.another"), Icon.refresh, this::anotherPlan).size(170f, 44f).tooltip(Tr.t("anotherTip"));
                     r.button(Icon.left, Styles.defaulti, () -> show(shown - 1)).size(44f).disabled(x -> shown <= 0);
                     r.button(Icon.right, Styles.defaulti, () -> show(shown + 1)).size(44f).disabled(x -> shown >= variants.size - 1);
-                    r.button("Ports", Icon.move, this::startPicking);
-                    r.button(b2 -> b2.label(() -> job.extraKind() == null ? "" : "Add " + job.extraKind().name.toLowerCase()), Styles.defaultt, this::addPorts)
-                        .size(170f, 44f).visible(() -> job.extraKind() != null).tooltip("Pick more ports of this kind");
-                    r.button("Edit", Icon.settings, this::showDialog);
-                    r.button("Cancel", Icon.cancel, this::reset);
+                    r.button(Tr.t("btn.ports"), Icon.move, this::startPicking);
+                    r.button(b2 -> b2.label(() -> job.extraKind() == null ? "" : Tr.t("add", job.extraKind().name().toLowerCase())), Styles.defaultt, this::addPorts)
+                        .size(170f, 44f).visible(() -> job.extraKind() != null).tooltip(Tr.t("addTip"));
+                    r.button(Tr.t("btn.edit"), Icon.settings, this::showDialog);
+                    r.button(Tr.t("btn.cancel"), Icon.cancel, this::reset);
                 });
             }).visible(() -> phase == State.preview && current() != null);
         });
@@ -161,11 +160,11 @@ public class AutoBuildMod extends Mod{
     }
 
     void toggle(){
-        if(phase == State.select){ phase = State.idle; ui.showInfoToast("AutoBuild: off", 2f); return; }
+        if(phase == State.select){ phase = State.idle; ui.showInfoToast(Tr.t("off"), 2f); return; }
         if(phase != State.idle) return;
         phase = State.select;
         dragging = false;
-        ui.showInfoToast("AutoBuild: drag to select a region", 2f);
+        ui.showInfoToast(Tr.t("dragHint"), 2f);
     }
 
     // ---------------------------------------------------------------- input
@@ -233,7 +232,7 @@ public class AutoBuildMod extends Mod{
     String hoverReason(){
         String e = hover == null ? null : pickKind().error(hover);
         if(e == null && hover != null) e = job.portError(pickKind(), hover);
-        return e != null ? e : "That tile is already a port";
+        return e != null ? e : Tr.t("alreadyPort");
     }
 
     /** one port per tile; an existing building must suit the kind */
@@ -292,7 +291,7 @@ public class AutoBuildMod extends Mod{
 
     void showDialog(){
         boolean editing = !variants.isEmpty();
-        BaseDialog dialog = new BaseDialog("AutoBuild");
+        BaseDialog dialog = new BaseDialog(Tr.t("title"));
         Runnable[] rebuild = {null};
         rebuild[0] = () -> {
             Table c = dialog.cont;
@@ -307,21 +306,21 @@ public class AutoBuildMod extends Mod{
                         rebuild[0].run();
                     }).checked(b -> job == f).size(200f, 46f).disabled(b -> editing && job != f);
                 }
-                t.add("  Region: " + (job.bx - job.ax + 1) + " x " + (job.by - job.ay + 1) + " tiles").padLeft(10f);
+                t.add(Tr.t("regionSize", job.bx - job.ax + 1, job.by - job.ay + 1)).padLeft(16f);
             }).row();
             c.image().color(Pal.accent).height(3f).growX().padBottom(6f).row();
             c.pane(p -> {
                 p.defaults().left().pad(3f);
                 job.settings(p, rebuild[0]);
-                p.check("Replay the search as a gray preview", animate(), b -> Core.settings.put("autobuild-animate", b)).row();
+                p.check(Tr.t("replayOpt"), animate(), b -> Core.settings.put("autobuild-animate", b)).row();
             }).grow().maxHeight(Core.graphics.getHeight() * 0.75f / Scl.scl()).row();
         };
         rebuild[0].run();
-        dialog.buttons.button("Cancel", Icon.cancel, () -> { dialog.hide(); if(!editing) reset(); }).size(170f, 54f);
+        dialog.buttons.button(Tr.t("btn.cancel"), Icon.cancel, () -> { dialog.hide(); if(!editing) reset(); }).size(170f, 54f);
         if(editing){
-            dialog.buttons.button("Re-plan", Icon.refresh, () -> { dialog.hide(); startPlanning(true); }).size(170f, 54f).disabled(b -> !job.ready());
+            dialog.buttons.button(Tr.t("btn.replan"), Icon.refresh, () -> { dialog.hide(); startPlanning(true); }).size(170f, 54f).disabled(b -> !job.ready());
         }
-        dialog.buttons.button("Pick ports", Icon.right, () -> { dialog.hide(); startPicking(); }).size(170f, 54f).disabled(b -> !job.ready());
+        dialog.buttons.button(Tr.t("btn.pickPorts"), Icon.right, () -> { dialog.hide(); startPicking(); }).size(170f, 54f).disabled(b -> !job.ready());
         dialog.show();
     }
 
@@ -331,7 +330,7 @@ public class AutoBuildMod extends Mod{
     void startPlanning(boolean fresh){
         snapshot = job.prepare();
         if(snapshot == null){
-            ui.showInfoToast("[scarlet]AutoBuild: " + job.error, 4f);
+            ui.showInfoToast(Tr.t("err", job.error), 4f);
             phase = variants.isEmpty() ? State.idle : State.preview;
             return;
         }
@@ -343,7 +342,7 @@ public class AutoBuildMod extends Mod{
         int token = ++planToken;
         synchronized(frames){ frames.clear(); }
         latest = null;
-        stage = "snapshot";
+        stage = Tr.stage("snapshot");
         phase = State.planning;
 
         BuildJob.Progress progress = (st, plans) -> {
@@ -377,7 +376,7 @@ public class AutoBuildMod extends Mod{
                 Core.app.post(() -> {
                     if(token != planToken) return;
                     phase = variants.isEmpty() ? State.idle : State.preview;
-                    ui.showInfoToast("[scarlet]AutoBuild planner crashed: " + e, 5f);
+                    ui.showInfoToast(Tr.t("crashed", e), 5f);
                 });
             }
         }, "autobuild-planner");
@@ -393,7 +392,7 @@ public class AutoBuildMod extends Mod{
     void finished(int token, PlanResult result){
         if(token != planToken || phase != State.planning) return;
         if(result == null || !result.ok()){
-            ui.showInfoToast("[scarlet]AutoBuild failed: " + (result == null ? "nothing to plan" : result.error), 4f);
+            ui.showInfoToast(Tr.t("failed", result == null ? Tr.t("nothing") : result.error), 4f);
             phase = variants.isEmpty() ? State.idle : State.preview;
             return;
         }
@@ -417,11 +416,11 @@ public class AutoBuildMod extends Mod{
         PlanResult c = current();
         if(c == null) return;
         if(player.unit() == null || !player.unit().canBuild()){
-            ui.showInfoToast("[scarlet]Your unit can't build", 3f);
+            ui.showInfoToast(Tr.t("cantBuild"), 3f);
             return;
         }
         for(BuildPlan p : c.plans) player.unit().addBuild(p.copy());
-        ui.showInfoToast("Queued " + c.plans.size + " build plans", 3f);
+        ui.showInfoToast(Tr.t("queued", c.plans.size), 3f);
         reset();
     }
 
@@ -504,13 +503,13 @@ public class AutoBuildMod extends Mod{
             case pick: {
                 // ports picked so far, then the one under the cursor
                 for(PortKind k : kinds){
-                    for(int i = 0; i < k.picks.size; i++) port(k, k.picks.get(i), k.name + " " + (i + 1), true);
+                    for(int i = 0; i < k.picks.size; i++) port(k, k.picks.get(i), k.name() + " " + (i + 1), true);
                 }
                 if(hover != null){
                     PortKind k = pickKind();
-                    String what = hover.existing != null ? (k.input ? " from " : " into ") + hover.existing.block.localizedName + "?"
-                        : hover.edge ? " (edge)?" : " here?";
-                    port(k, hover, hoverValid ? k.name + what : hoverReason(), hoverValid);
+                    String what = hover.existing != null ? Tr.t(k.input ? "hover.from" : "hover.into", hover.existing.block.localizedName)
+                        : hover.edge ? Tr.t("hover.edge") : Tr.t("hover.here");
+                    port(k, hover, hoverValid ? k.name() + what : hoverReason(), hoverValid);
                 }
                 break;
             }
@@ -547,7 +546,7 @@ public class AutoBuildMod extends Mod{
                     if(ps.isEmpty()) continue;
                     for(int i = 0; i < ps.size; i++){
                         String extra = c.portLabel(k, i);
-                        port(k, ps.get(i), (ps.size > 1 ? k.name + " " + (i + 1) : k.name) + (c.auto(k) ? " (auto)" : "") + (extra == null ? "" : "  " + extra), c.portOk(k, i), row);
+                        port(k, ps.get(i), (ps.size > 1 ? k.name() + " " + (i + 1) : k.name()) + (c.auto(k) ? Tr.t("autoTag") : "") + (extra == null ? "" : "  " + extra), c.portOk(k, i), row);
                     }
                     row++;
                 }

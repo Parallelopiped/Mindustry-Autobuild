@@ -7,6 +7,13 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-19
+### Added
+- **Simplified Chinese**: every text of the mod (buttons, dialogs, prompts, summaries, warnings,
+  planning stages, planner failures) comes from `assets/bundles/bundle.properties` /
+  `bundle_zh_CN.properties` and follows the language set in the game. Block, item and liquid names
+  use the game's own translations.
+
 ## [1.2.1] - 2026-10-19
 ### Changed
 - **Material efficiency mode mines more**: any drill (fillers included) is worth placing when at
@@ -259,6 +266,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.0]: #
 [1.2.1]: #
 [1.2.0]: #
 [1.1.0]: #

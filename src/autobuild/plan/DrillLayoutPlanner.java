@@ -156,6 +156,13 @@ public class DrillLayoutPlanner{
     public final List<Place> places = new ArrayList<>();
     public int drills, wetDrills, waterTiles, oreTiles, nodes, belts, bridges, segmentsRouted, segmentsDropped, drillsDroppedForPower, powerGroups, port = -1;
     public String layout = "", failure;
+    /** the failure as a bundle key (game side: "autobuild.fail." + key) and its arguments */
+    public String failureKey;
+    public Object[] failureArgs = new Object[0];
+
+    void fail(String key, String text, Object... args){
+        failureKey = key; failure = text; failureArgs = args;
+    }
     /** objective of the final plan without variant noise (higher is better); comparable across ports/variants */
     public double score;
     /** water was requested but a dry layout scored better (e.g. the water network couldn't reach the rows) */
@@ -247,10 +254,10 @@ public class DrillLayoutPlanner{
     }
 
     public boolean plan(){
-        if(W < s + 2 || H < s + 1){ failure = "region too small for this drill"; return false; }
+        if(W < s + 2 || H < s + 1){ fail("drillSmall", "region too small for this drill"); return false; }
         boolean any = false;
         for(boolean[] col : p.beltOk) for(boolean b : col) any |= b;
-        if(!any){ failure = "nothing in the region is buildable (walls, deep water or enemy territory)"; return false; }
+        if(!any){ fail("nothingBuildable", "nothing in the region is buildable (walls, deep water or enemy territory)"); return false; }
         if(p.family == Family.AUTO) return planAuto();
         return planFamily();
     }
@@ -263,7 +270,7 @@ public class DrillLayoutPlanner{
         if(p.water) fams.add(Family.WATER_ROWS);
         fams.add(Family.DRILL_FIRST);
         DrillLayoutPlanner best = null;
-        String firstFail = null;
+        DrillLayoutPlanner firstFail = null;
         for(Family fam : fams){
             checkCancel();
             Params q = p.copy();
@@ -274,9 +281,9 @@ public class DrillLayoutPlanner{
             sub.snapshotInterval = snapshotInterval;
             if(sub.plan()){
                 if(best == null || sub.score > best.score) best = sub;
-            }else if(firstFail == null) firstFail = sub.failure;
+            }else if(firstFail == null) firstFail = sub;
         }
-        if(best == null){ failure = firstFail; return false; }
+        if(best == null){ if(firstFail != null){ failure = firstFail.failure; failureKey = firstFail.failureKey; failureArgs = firstFail.failureArgs; } return false; }
         places.clear(); places.addAll(best.places);
         drills = best.drills; wetDrills = best.wetDrills; waterTiles = best.waterTiles; oreTiles = best.oreTiles; nodes = best.nodes;
         belts = best.belts; bridges = best.bridges; segmentsRouted = best.segmentsRouted; segmentsDropped = best.segmentsDropped;
@@ -294,7 +301,7 @@ public class DrillLayoutPlanner{
 
         boolean useWater = p.water && (fam == Family.WATER_ROWS || fam == Family.DRILL_FIRST);
         assumeWet = useWater && fam == Family.DRILL_FIRST;
-        if(useWater && !setupWater()){ failure = "no buildable tile for the water port"; return false; }
+        if(useWater && !setupWater()){ fail("waterPort", "no buildable tile for the water port"); return false; }
         computeOre();
         occ = new int[W][H];
         noise = true;
@@ -306,7 +313,7 @@ public class DrillLayoutPlanner{
             default: feeders = new ArrayList<>(); layout = "drill-first"; break;
         }
         if(fam != Family.DRILL_FIRST && feeders.isEmpty()){
-            failure = p.mode == Mode.EFFICIENCY ? "no drill position with enough target ore (try Max output)" : "no drill position on the target ore";
+            if(p.mode == Mode.EFFICIENCY) fail("noDrillEff", "no drill position with enough target ore (try Max output)"); else fail("noDrill", "no drill position on the target ore");
             return false;
         }
 
@@ -358,7 +365,7 @@ public class DrillLayoutPlanner{
             }
             feeders = routed;
         }
-        if(segmentsRouted == 0){ failure = "nothing could be routed to an output"; return false; }
+        if(segmentsRouted == 0){ fail("noRoute", "nothing could be routed to an output"); return false; }
 
         fillGaps();
         if(fam == Family.DRILL_FIRST && useWater) waterByDrill();
@@ -763,7 +770,7 @@ public class DrillLayoutPlanner{
         sinkList = new ArrayList<>();
         if(p.sinks == null){
             port = findPort();
-            if(port < 0){ failure = "no buildable tile on the output edge"; return false; }
+            if(port < 0){ fail("outputEdge", "no buildable tile on the output edge"); return false; }
             sinkList.add(new int[]{W, port});
         }else{
             for(int[] s0 : p.sinks) sinkList.add(new int[]{s0[0], s0[1]});

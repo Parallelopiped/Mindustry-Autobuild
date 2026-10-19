@@ -154,6 +154,13 @@ public class DefensePlanner{
     int[][] occ;
     public final List<Place> places = new ArrayList<>();
     public String failure;
+    /** the failure as a bundle key (game side: "autobuild.fail." + key) and its arguments */
+    public String failureKey;
+    public Object[] failureArgs = new Object[0];
+
+    void fail(String key, String text, Object... args){
+        failureKey = key; failure = text; failureArgs = args;
+    }
     public Ctl ctl = new Ctl();
     /** the row order this layout was built with (for the summary) */
     public String templateName = "";
@@ -282,15 +289,16 @@ public class DefensePlanner{
         base.ctl = ctl;
         if(!base.prepare()) return base;
         List<DefensePlanner> done = new ArrayList<>();
-        String firstFail = null;
+        DefensePlanner firstFail = null;
         for(int[] order : base.orders()){
             base.checkCancel();
             DefensePlanner l = new DefensePlanner(base);
             if(l.layout(order)) done.add(l);
-            else if(firstFail == null) firstFail = l.failure;
+            else if(firstFail == null) firstFail = l;
         }
         if(done.isEmpty()){
-            base.failure = firstFail != null ? firstFail : "no turret could be placed and supplied";
+            if(firstFail != null && firstFail.failure != null){ base.failure = firstFail.failure; base.failureKey = firstFail.failureKey; base.failureArgs = firstFail.failureArgs; }
+            else base.fail("noTurretSupplied", "no turret could be placed and supplied");
             return base;
         }
         done.sort((a, b) -> Double.compare(b.score, a.score));
@@ -305,19 +313,19 @@ public class DefensePlanner{
 
     /** routes, zones; false (and failure) if this region can't hold a defense */
     boolean prepare(){
-        if(p.rw < 3 || p.rh < 3){ failure = "region too small"; return false; }
-        if(p.rw * p.rh > MAX_AREA){ failure = "region too large (" + p.rw * p.rh + " tiles, at most " + MAX_AREA + "): select a strip along the route - it is filled completely"; return false; }
+        if(p.rw < 3 || p.rh < 3){ fail("regionSmall", "region too small"); return false; }
+        if(p.rw * p.rh > MAX_AREA){ fail("regionLarge", "region too large (" + p.rw * p.rh + " tiles, at most " + MAX_AREA + "): select a strip along the route - it is filled completely", p.rw * p.rh, MAX_AREA); return false; }
         computeRoutes();
         if(groundRoutes.isEmpty() && airRoutes.isEmpty()){
-            failure = "no enemy route: the map needs an enemy spawn (or enemy core) and a core of yours";
+            fail("noEnemyRoute", "no enemy route: the map needs an enemy spawn (or enemy core) and a core of yours");
             return false;
         }
         reach();
-        if(rx.length == 0){ failure = "no enemy route passes within turret range of this region"; return false; }
+        if(rx.length == 0){ fail("routeOutOfRange", "no enemy route passes within turret range of this region"); return false; }
         zones();
         int free = 0;
         for(int u = p.rx0; u < p.rx0 + p.rw; u++) for(int v = p.ry0; v < p.ry0 + p.rh; v++) if(occ[u][v] == FREE) free++;
-        if(free < 4){ failure = "nothing in the region can be built on beside the enemy route"; return false; }
+        if(free < 4){ fail("nothingBeside", "nothing in the region can be built on beside the enemy route"); return false; }
         double sum = 0;
         int cnt = 0;
         for(Type t : p.types) if(t.kind == TURRET){ sum += Math.max(t.dpsGround, t.dpsAir); cnt++; }
@@ -590,12 +598,12 @@ public class DefensePlanner{
                 if(support) b = supportRow(b, st[0], st[1]);
                 rows(order, b, st[0], st[1]);
             }
-            if(turrets() == 0){ failure = "no turret fits beside the route within range"; return false; }
+            if(turrets() == 0){ fail("noTurretFits", "no turret fits beside the route within range"); return false; }
             int before = turrets();
             connectLanes();
             gapFill();
             if(System.getProperty("defdebug") != null) System.out.println("layout " + templateName + " front=" + front + " turrets " + before + " -> " + turrets() + " lanes " + lanes.size() + " unfed " + unfed + " failed " + failedLanes);
-            if(turrets() == 0){ failure = failure != null ? failure : "the turrets' supply lanes couldn't be connected to the inputs"; return false; }
+            if(turrets() == 0){ if(failure == null) fail("lanesUnconnected", "the turrets' supply lanes couldn't be connected to the inputs"); return false; }
             projectors();
             power();
             prune();

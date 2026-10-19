@@ -10,13 +10,13 @@ import mindustry.gen.*;
  * input...). Holds the ports picked so far; empty = let the planner choose.
  */
 public class PortKind{
-    /** "Item output"; plural for the picking prompt ("item outputs") */
-    public final String name, plural;
+    /** "Item output"; plural for the picking prompt ("item outputs"): looked up when shown (the language may change) */
+    final Prov<String> name, plural;
     public final Color color;
     /** an input: the marker arrow points into the region */
     public final boolean input;
     /** what a port on the border / inside the region means, shown while picking */
-    public final String edgeHelp, interiorHelp;
+    final Prov<String> edgeHelp, interiorHelp;
     /** why an existing building can't serve as this port, or null if it can */
     public final Func<Building, String> check;
     public final Seq<Port> picks = new Seq<>();
@@ -25,10 +25,18 @@ public class PortKind{
     /** with {@link #anywhere}: a click on / near the region still snaps to its edge or picks an inside tile */
     public boolean snapNear;
 
-    public PortKind(String name, String plural, Color color, boolean input, String edgeHelp, String interiorHelp, Func<Building, String> check){
+    public PortKind(Prov<String> name, Prov<String> plural, Color color, boolean input, Prov<String> edgeHelp, Prov<String> interiorHelp, Func<Building, String> check){
         this.name = name; this.plural = plural; this.color = color; this.input = input;
         this.edgeHelp = edgeHelp; this.interiorHelp = interiorHelp; this.check = check;
     }
+
+    public String name(){ return name.get(); }
+
+    public String plural(){ return plural.get(); }
+
+    public String edgeHelp(){ return edgeHelp.get(); }
+
+    public String interiorHelp(){ return interiorHelp.get(); }
 
     public PortKind anywhere(){
         anywhere = true;

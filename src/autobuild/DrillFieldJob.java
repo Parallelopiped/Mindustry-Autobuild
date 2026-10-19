@@ -56,16 +56,16 @@ public class DrillFieldJob extends BuildJob{
     public int sinkReserve;
 
     // ---- ports: picked by the player; empty = let the planner choose ----
-    public final PortKind outKind = new PortKind("Item output", "item outputs", Pal.remove, false,
-        "the belt leaves the region there", "items are delivered into that tile (put your conveyor / core there)", BuildJob::itemSinkError).anywhereOrNear();
-    public final PortKind waterKind = new PortKind("Water input", "water inputs", Pal.water, true,
-        "connect your pipe from outside", "a liquid router you feed", BuildJob::liquidSourceError).anywhereOrNear();
+    public final PortKind outKind = new PortKind(() -> Tr.t("drill.out"), () -> Tr.t("drill.outs"), Pal.remove, false,
+        () -> Tr.t("drill.outEdge"), () -> Tr.t("drill.outIn"), BuildJob::itemSinkError).anywhereOrNear();
+    public final PortKind waterKind = new PortKind(() -> Tr.t("drill.water"), () -> Tr.t("drill.waters"), Pal.water, true,
+        () -> Tr.t("drill.waterEdge"), () -> Tr.t("drill.waterIn"), BuildJob::liquidSourceError).anywhereOrNear();
     public final Seq<Port> outs = outKind.picks, waters = waterKind.picks;
 
     volatile DrillLayoutPlanner current;
 
     @Override
-    public String name(){ return "Drill field"; }
+    public String name(){ return Tr.t("drill.name"); }
 
     @Override
     public Seq<PortKind> portKinds(){
@@ -125,9 +125,9 @@ public class DrillFieldJob extends BuildJob{
         if(drill == null || !drills.contains(drill)) drill = drills.isEmpty() ? null : drills.first();
         if(!belts.contains(belt)) belt = belts.isEmpty() ? null : belts.first();
 
-        c.add("Ore:").row();
+        c.add(Tr.t("drill.ore")).row();
         c.table(t -> {
-            if(oreList.isEmpty()) t.add("[scarlet]no ore in region");
+            if(oreList.isEmpty()) t.add(Tr.t("drill.noOre"));
             int i = 0;
             for(Item it : oreList){
                 t.button(b -> {
@@ -142,11 +142,11 @@ public class DrillFieldJob extends BuildJob{
             }
         }).row();
 
-        c.add("Drill:").row();
+        c.add(Tr.t("drill.drill")).row();
         c.table(t -> {
             int i = 0;
             for(Drill d : drills){
-                String tags = (needsPower(d) ? " [accent]⚡" : "") + (needsLiquid(d) ? " [sky]liquid!" : "");
+                String tags = (needsPower(d) ? " [accent]⚡" : "") + (needsLiquid(d) ? Tr.t("drill.liquidTag") : "");
                 t.button(bt -> {
                     bt.image(d.uiIcon).size(24f).padRight(4f);
                     bt.add(d.localizedName + " [lightgray]T" + d.tier + " " + d.size + "x" + d.size + tags).growX();
@@ -156,9 +156,9 @@ public class DrillFieldJob extends BuildJob{
             }
         }).row();
 
-        c.add("Belt:").row();
+        c.add(Tr.t("drill.belt")).row();
         c.table(t -> {
-            if(belts.isEmpty()) t.add("[scarlet]no supported conveyor available here");
+            if(belts.isEmpty()) t.add(Tr.t("drill.noBelt"));
             for(Block b : belts){
                 float speed = b instanceof Conveyor cv ? cv.displayedSpeed : 0f;
                 t.button(bt -> {
@@ -168,30 +168,29 @@ public class DrillFieldJob extends BuildJob{
             }
         }).row();
 
-        c.check("Use item bridges (denser layouts, routes over obstacles)", bridges, b -> bridges = b)
+        c.check(Tr.t("drill.bridges"), bridges, b -> bridges = b)
             .disabled(b -> !available(Blocks.itemBridge)).row();
-        c.check("Fill gaps with smaller drills (up to the chosen tier)", mixDrills, b -> mixDrills = b).row();
+        c.check(Tr.t("drill.mix"), mixDrills, b -> mixDrills = b).row();
 
         Seq<Block> conduits = Seq.with(Blocks.conduit, Blocks.pulseConduit).select(BuildJob::available);
         if(!conduits.contains(conduit) && !conduits.isEmpty()) conduit = conduits.first();
         c.table(t -> {
-            t.check("Water boost", water, b -> water = b)
+            t.check(Tr.t("drill.waterBoost"), water, b -> water = b)
                 .disabled(b -> drill == null || waterBoost(drill) == null || !waterAvailable(conduit)).padRight(10f);
             for(Block b : conduits){
                 t.button(bt -> bt.image(b.uiIcon).size(24f), Styles.flatTogglet, () -> conduit = b).checked(bt -> conduit == b)
                     .disabled(bt -> !water).size(40f, 36f).padRight(4f).tooltip(b.localizedName);
             }
             t.label(() -> drill == null || waterBoost(drill) == null ? "" :
-                "[lightgray]x" + Strings.autoFixed(drill.liquidBoostIntensity * drill.liquidBoostIntensity, 2) + " speed, "
-                + Strings.autoFixed(waterBoost(drill).amount * 60f, 1) + " water/s per drill").padLeft(6f);
+                Tr.t("drill.boostInfo", Strings.autoFixed(drill.liquidBoostIntensity * drill.liquidBoostIntensity, 2), Strings.autoFixed(waterBoost(drill).amount * 60f, 1))).padLeft(6f);
         }).row();
 
-        c.add("Optimize for:").row();
+        c.add(Tr.t("drill.optimize")).row();
         c.table(t -> {
-            t.button("Max output", Styles.flatTogglet, () -> mode = Mode.OUTPUT).checked(b -> mode == Mode.OUTPUT).size(170f, 40f);
-            t.button("Material efficiency", Styles.flatTogglet, () -> mode = Mode.EFFICIENCY).checked(b -> mode == Mode.EFFICIENCY).size(220f, 40f);
+            t.button(Tr.t("drill.maxOut"), Styles.flatTogglet, () -> mode = Mode.OUTPUT).checked(b -> mode == Mode.OUTPUT).size(170f, 40f);
+            t.button(Tr.t("drill.eff"), Styles.flatTogglet, () -> mode = Mode.EFFICIENCY).checked(b -> mode == Mode.EFFICIENCY).size(220f, 40f);
         }).row();
-        c.add("[lightgray]Next you click where items leave (and water enters) the region; right-click lets the planner choose.").row();
+        c.add(Tr.t("drill.hint")).row();
     }
 
     // ------------------------------------------------------------------ geometry
@@ -290,13 +289,13 @@ public class DrillFieldJob extends BuildJob{
         sn.power = false;
         for(Drill d : sn.types) sn.power |= needsPower(d);
         sn.node0 = sn.power ? powerNode() : null;
-        if(sn.power && sn.node0 == null){ error = drill.localizedName + " needs power, but power nodes aren't available here"; return null; }
+        if(sn.power && sn.node0 == null){ error = Tr.t("drill.needsPower", drill.localizedName); return null; }
         sn.rate = new double[sn.types.length];
         for(int i = 0; i < sn.types.length; i++) sn.rate[i] = drill.getDrillTime(target) / sn.types[i].getDrillTime(target);
         sn.bridge = bridges && available(Blocks.itemBridge) ? (ItemBridge)Blocks.itemBridge : null;
         ConsumeLiquid boost = waterBoost(drill);
         if(water && (boost == null || !waterAvailable(conduit))){
-            error = boost == null ? drill.localizedName + " can't be boosted with water" : "conduits / liquid routers aren't available here";
+            error = boost == null ? Tr.t("drill.noBoost", drill.localizedName) : Tr.t("drill.noConduits");
             return null;
         }
         sn.waterOn = water;
@@ -420,15 +419,15 @@ public class DrillFieldJob extends BuildJob{
 
         @Override
         public String portText(){
-            StringBuilder t = new StringBuilder(outPorts.size == 1 ? "Output: " : "Outputs: ");
+            StringBuilder t = new StringBuilder(Tr.t(ports(outKind).size == 1 ? "drill.output" : "drill.outputs"));
             Seq<Port> po = ports(outKind);
-            for(int i = 0; i < po.size; i++) t.append(i > 0 ? ", " : "").append(po.get(i).name());
-            if(outAuto) t.append(" (auto)");
+            for(int i = 0; i < po.size; i++) t.append(i > 0 ? Tr.t("sep") : "").append(po.get(i).name());
+            if(outAuto) t.append(Tr.t("autoTag"));
             if(water()){
-                t.append(", water from: ");
+                t.append(Tr.t("drill.waterFrom"));
                 Seq<Port> pw = ports(waterKind);
-                for(int i = 0; i < pw.size; i++) t.append(i > 0 ? ", " : "").append(pw.get(i).name());
-                if(waterAuto) t.append(" (auto)");
+                for(int i = 0; i < pw.size; i++) t.append(i > 0 ? Tr.t("sep") : "").append(pw.get(i).name());
+                if(waterAuto) t.append(Tr.t("autoTag"));
             }
             return t.toString();
         }
@@ -465,9 +464,9 @@ public class DrillFieldJob extends BuildJob{
         public String portLabel(PortKind kind, int k){
             if(kind != outKind || (userOuts == null && k >= loads.length)) return null;
             float[] l = userLoad(k);
-            String t = Strings.autoFixed(l[0], 1) + "/" + Strings.autoFixed(beltCapacity * l[1], 1) + " per s";
-            if(l[1] > 1) t += " (" + (int)l[1] + " lines)";
-            if(userOuts != null && unreached.contains(userOuts.get(k).name())) t += " [scarlet]no path[]";
+            String t = Tr.t("drill.perS", Strings.autoFixed(l[0], 1), Strings.autoFixed(beltCapacity * l[1], 1));
+            if(l[1] > 1) t += Tr.t("drill.lines", (int)l[1]);
+            if(userOuts != null && unreached.contains(userOuts.get(k).name())) t += Tr.t("drill.noPath");
             return t;
         }
 
@@ -491,30 +490,30 @@ public class DrillFieldJob extends BuildJob{
                 if(kinds.length() > 0) kinds.append(" + ");
                 kinds.append(perType[i]).append(' ').append(types[i].localizedName);
             }
-            sb.append(Strings.format("@ on @ @ ore tiles, ~@/s", kinds, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
-            sb.append(Strings.format(" [lightgray](@)[]", planner.layout));
+            sb.append(Tr.t("drill.sum", kinds, planner.oreTiles, target.localizedName, Strings.autoFixed(itemsPerSecond, 1)));
+            sb.append(" [lightgray](").append(Tr.layout(planner.layout)).append(")[]");
             if(water() && planner.waterSkipped){
-                sb.append("\n[orange]Water skipped: the water network couldn't reach enough drills to beat a layout without water");
+                sb.append("\n").append(Tr.t("drill.waterSkipped"));
             }else if(water()){
-                sb.append(Strings.format("\n[sky]@/@ drills water-boosted, needs ~@ water/s at the water port", planner.wetDrills, planner.drills,
+                sb.append("\n").append(Tr.t("drill.wet", planner.wetDrills, planner.drills,
                     Strings.autoFixed(waterPerSecond, 1)));
             }
-            if(planner.nodes > 0) sb.append(Strings.format("\n@ power nodes, needs @ power/s", planner.nodes, Strings.autoFixed(powerPerSecond, 1)));
+            if(planner.nodes > 0) sb.append("\n").append(Tr.t("drill.nodes", planner.nodes, Strings.autoFixed(powerPerSecond, 1)));
             // per output line: load / capacity
-            sb.append("\n").append(loads.length == 1 ? "Output line: " : "Output lines: ");
+            sb.append("\n").append(Tr.t(loads.length == 1 ? "drill.line" : "drill.lineS"));
             for(int k = 0; k < loads.length; k++){
-                sb.append(k > 0 ? ", " : "").append(overloaded(k) ? "[scarlet]" : "[lightgray]")
+                sb.append(k > 0 ? Tr.t("sep") : "").append(overloaded(k) ? "[scarlet]" : "[lightgray]")
                     .append(Strings.autoFixed((float)loads[k], 1)).append('/').append(Strings.autoFixed(beltCapacity, 1)).append("[]");
             }
-            sb.append(" items/s");
-            for(int k = 0; k < loads.length; k++) if(overloaded(k)){ sb.append("\n[scarlet]Output ").append(k + 1).append(" exceeds ").append(belt.localizedName).append(" capacity: it will back up"); break; }
-            if(excessFlow > 0.1f) sb.append(Strings.format("\n[orange]The field could add ~@/s with more outputs: use \"Add output\"", Strings.autoFixed(excessFlow, 1)));
-            if(remote != null && remote.any && remote.trunkTiles > 0) sb.append("\n[lightgray]Lines to the outputs / water away from the region: ").append(remote.trunkTiles).append(" tiles[]");
-            for(String u : unreached) sb.append("\n[scarlet]No free path to ").append(u).append(": connect that line yourself");
-            if(planner.segmentsDropped > 0) sb.append("\n[orange]").append(planner.segmentsDropped).append(" lane(s) dropped: no route to an output");
-            if(planner.drillsDroppedForPower > 0) sb.append("\n[orange]").append(planner.drillsDroppedForPower).append(" drill(s) dropped to fit power nodes");
-            if(planner.powerGroups > 1) sb.append("\n[orange]Power nodes form ").append(planner.powerGroups).append(" separate groups: link them manually");
-            if(needsLiquid(drill) && !water()) sb.append("\n[orange]").append(drill.localizedName).append(" needs a liquid supply (not planned yet)");
+            sb.append(Tr.t("drill.itemsS"));
+            for(int k = 0; k < loads.length; k++) if(overloaded(k)){ sb.append("\n").append(Tr.t("drill.overload", k + 1, belt.localizedName)); break; }
+            if(excessFlow > 0.1f) sb.append("\n").append(Tr.t("drill.excess", Strings.autoFixed(excessFlow, 1)));
+            if(remote != null && remote.any && remote.trunkTiles > 0) sb.append("\n").append(Tr.t("drill.trunk", remote.trunkTiles));
+            for(String u : unreached) sb.append("\n").append(Tr.t("drill.unreached", u));
+            if(planner.segmentsDropped > 0) sb.append("\n").append(Tr.t("drill.dropped", planner.segmentsDropped));
+            if(planner.drillsDroppedForPower > 0) sb.append("\n").append(Tr.t("drill.powerDropped", planner.drillsDroppedForPower));
+            if(planner.powerGroups > 1) sb.append("\n").append(Tr.t("drill.groups", planner.powerGroups));
+            if(needsLiquid(drill) && !water()) sb.append("\n").append(Tr.t("drill.needsLiquid", drill.localizedName));
             return sb.toString();
         }
     }
@@ -608,7 +607,7 @@ public class DrillFieldJob extends BuildJob{
         DrillLayoutPlanner planner = c.planner = current = new DrillLayoutPlanner(p);
         if(cancelled) throw new CancelledException();
         if(progress != null){
-            planner.listener = (st, snap) -> progress.frame(dirNames[c.outDir] + " #" + c.variant + ": " + st, c.toPlans(snap));
+            planner.listener = (st, snap) -> progress.frame(Tr.or("dir." + c.outDir, dirNames[c.outDir]) + " #" + c.variant + ": " + Tr.stage(st), c.toPlans(snap));
             planner.snapshotInterval = 4;
         }
         long time = Time.millis();
@@ -617,7 +616,7 @@ public class DrillFieldJob extends BuildJob{
             W, H, dirNames[dir], c.portText(), variant, drill.name, mode, planner.layout, ok, Strings.autoFixed((float)planner.score, 1),
             planner.drills, planner.wetDrills, planner.oreTiles, planner.belts, planner.bridges, planner.nodes, Arrays.toString(planner.sinkLoad),
             Strings.autoFixed((float)planner.excessFlow, 1), Time.timeSinceMillis(time), ok ? "" : planner.failure);
-        if(!ok){ c.error = planner.failure; return c; }
+        if(!ok){ c.error = Tr.failure(planner.failureKey, planner.failureArgs, planner.failure); return c; }
 
         c.waterPerSecond = 0f;
         Seq<BuildPlan> nodes = new Seq<>(), logistics = new Seq<>(), drills = new Seq<>();

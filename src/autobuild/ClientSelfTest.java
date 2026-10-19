@@ -72,7 +72,7 @@ public class ClientSelfTest{
         if(phase == 0) return;
         timer += Time.delta / 60f;
         if(timer > 150f){ fail("timeout in phase " + phase); return; }
-        if(phase >= 10){ updateDefense(); return; }
+        if(phase >= 9){ updateDefense(); return; }
         switch(phase){
             case 1: // wait for the world and player unit, then go through the real UI flow
                 if(defense && state.isGame() && player.unit() != null && !player.unit().dead && timer > 3f){
@@ -191,6 +191,13 @@ public class ClientSelfTest{
         if(!BuildJob.available(job.belt)) job.belt = Blocks.conveyor;
         Log.info("[selftest] defense region (@,@)-(@,@), @ route(s); @", job.ax, job.ay, job.bx, job.by, job.previewRoutes.size, Strings.stripColors(job.threatText));
         if(job.problem() != null){ fail(job.problem()); return; }
+        // the settings dialog, for a screenshot (in the game's language)
+        mod.showDialog();
+        phase = 9;
+        timer = 0f;
+    }
+
+    void pickDefensePorts(){
         mod.startPicking();
         for(int i = 0; i < 6 && mod.phase == AutoBuildMod.State.pick; i++) mod.autoKind();
         phase = 10;
@@ -198,11 +205,23 @@ public class ClientSelfTest{
 
     void updateDefense(){
         switch(phase){
+            case 9:
+                keepNearRegion();
+                if(timer > 0.5f && previewShotAt < 0){ shot = "dialog"; previewShotAt = timer; }
+                if(previewShotAt >= 0 && timer - previewShotAt > 0.5f){
+                    previewShotAt = -1f;
+                    if(Core.scene.getDialog() != null) Core.scene.getDialog().hide(null);
+                    pickDefensePorts();
+                }
+                break;
             case 10: // planning, replay, preview with the route drawn
                 keepNearRegion();
                 if(mod.phase == AutoBuildMod.State.playback) sawReplay = true;
                 if(mod.phase == AutoBuildMod.State.preview){
                     PlanResult c = mod.current();
+                    if(previewShotAt < 0 && previewSeenAt < 0){ previewSeenAt = timer; return; }
+                    // a moment later: glyphs drawn for the first time are generated during that frame
+                    if(previewShotAt < 0 && timer - previewSeenAt < 1f) return;
                     if(previewShotAt < 0){
                         Log.info("[selftest] defense plan: @ keyframes, replay seen @; @ | @ | score @", mod.frames.size, sawReplay,
                             Strings.stripColors(c.summary()).replace('\n', ' '), c.portText(), Strings.autoFixed((float)c.score(), 1));
@@ -250,6 +269,7 @@ public class ClientSelfTest{
     }
 
     Seq<BuildPlan> builtPlans;
+    float previewSeenAt = -1f;
 
     void keepNearRegion(){
         BuildJob job = mod.job;

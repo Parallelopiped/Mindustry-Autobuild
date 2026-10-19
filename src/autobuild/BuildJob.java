@@ -112,9 +112,9 @@ public abstract class BuildJob{
     /** why a port picked for this kind can't be used (besides the building check), or null */
     public String portError(PortKind kind, Port p){
         if(!kind.anywhere || p.existing != null) return null;
-        if(world.tile(p.x, p.y) == null) return "outside the map";
-        if(inRegion(p.x, p.y)) return "pick a tile outside the region (the region is filled with the defense)";
-        if(!empty(p.x, p.y) || world.tile(p.x, p.y).solid()) return "that tile is taken";
+        if(world.tile(p.x, p.y) == null) return Tr.t("port.outsideMap");
+        if(inRegion(p.x, p.y)) return Tr.t("port.notInRegion");
+        if(!empty(p.x, p.y) || world.tile(p.x, p.y).solid()) return Tr.t("port.taken");
         return null;
     }
 
@@ -146,15 +146,15 @@ public abstract class BuildJob{
     /** existing building as an item output: it must take items */
     public static String itemSinkError(Building b){
         Block k = b.block;
-        if(!k.acceptsItems || !k.hasItems) return k.localizedName + " can't take items";
+        if(!k.acceptsItems || !k.hasItems) return Tr.t("port.noItems", k.localizedName);
         if(k instanceof ItemBridge ib && !(k instanceof LiquidBridge) && !bridgeLinked(ib, b))
-            return "an unlinked " + k.localizedName + " only takes items from other bridges";
+            return Tr.t("port.unlinkedBridge", k.localizedName);
         return null;
     }
 
     /** existing building as a liquid input: it must give out liquid */
     public static String liquidSourceError(Building b){
-        if(!b.block.hasLiquids || !b.block.outputsLiquid) return b.block.localizedName + " doesn't give out liquid";
+        if(!b.block.hasLiquids || !b.block.outputsLiquid) return Tr.t("port.noLiquid", b.block.localizedName);
         return null;
     }
 

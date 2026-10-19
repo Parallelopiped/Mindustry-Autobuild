@@ -72,8 +72,8 @@ public class DefenseJob extends BuildJob{
     // ---- ports ----
     final ObjectMap<Item, PortKind> ammoKinds = new ObjectMap<>();
     final ObjectMap<Liquid, PortKind> liquidKinds = new ObjectMap<>();
-    public final PortKind powerKind = new PortKind("Power input", "power inputs", Pal.powerLight, true,
-        "a power node is placed there: link it to your grid", "a power node is placed there: link it to your grid (or click your node / battery / generator)", DefenseJob::powerSourceError).anywhere();
+    public final PortKind powerKind = new PortKind(() -> Tr.t("def.power"), () -> Tr.t("def.powers"), Pal.powerLight, true,
+        () -> Tr.t("def.powerEdge"), () -> Tr.t("def.powerIn"), DefenseJob::powerSourceError).anywhere();
 
     volatile DefensePlanner.Ctl current;
 
@@ -92,16 +92,17 @@ public class DefenseJob extends BuildJob{
     }
 
     @Override
-    public String name(){ return "Defense"; }
+    public String name(){ return Tr.t("def.name"); }
 
     public PortKind ammoKind(Item item){
-        return ammoKinds.get(item, () -> new PortKind(item.localizedName + " input", item.localizedName + " inputs", item.color, true,
-            "your belt brings " + item.localizedName + " in there", "a tile your belt delivers into (or click your core / container / conveyor)", DefenseJob::itemSourceError).anywhere());
+        return ammoKinds.get(item, () -> new PortKind(() -> Tr.t("def.input", item.localizedName), () -> Tr.t("def.inputs", item.localizedName), item.color, true,
+            () -> Tr.t("def.ammoEdge", item.localizedName), () -> Tr.t("def.ammoIn"), DefenseJob::itemSourceError).anywhere());
     }
 
     public PortKind liquidKind(){
-        return liquidKinds.get(liquid, () -> new PortKind(liquid.localizedName + " input", liquid.localizedName + " inputs", liquid.color, true,
-            "connect your pipe from outside", "a tile your pipe delivers into (or click your tank / conduit / pump)", BuildJob::liquidSourceError).anywhere());
+        Liquid l = liquid;
+        return liquidKinds.get(l, () -> new PortKind(() -> Tr.t("def.input", l.localizedName), () -> Tr.t("def.inputs", l.localizedName), l.color, true,
+            () -> Tr.t("def.liquidEdge"), () -> Tr.t("def.liquidIn"), BuildJob::liquidSourceError).anywhere());
     }
 
     /** ammo items actually used by a selected turret */
@@ -135,16 +136,16 @@ public class DefenseJob extends BuildJob{
 
     /** why the selection can't be planned, or null */
     public String problem(){
-        if(turrets.isEmpty()) return "select at least one turret";
+        if(turrets.isEmpty()) return Tr.t("def.selectTurret");
         for(Turret t : turrets){
-            if(t instanceof ItemTurret it && !ammo.contains(i -> it.ammoTypes.containsKey(i))) return t.localizedName + ": select an ammo item it takes";
-            if(t instanceof LiquidTurret lt && (liquid == null || !lt.ammoTypes.containsKey(liquid))) return t.localizedName + ": choose a liquid it shoots";
-            if(t instanceof LaserTurret && (liquid == null || !coolantOk(liquid))) return t.localizedName + " needs a coolant (water / cryofluid)";
+            if(t instanceof ItemTurret it && !ammo.contains(i -> it.ammoTypes.containsKey(i))) return Tr.t("def.selectAmmo", t.localizedName);
+            if(t instanceof LiquidTurret lt && (liquid == null || !lt.ammoTypes.containsKey(liquid))) return Tr.t("def.selectLiquid", t.localizedName);
+            if(t instanceof LaserTurret && (liquid == null || !coolantOk(liquid))) return Tr.t("def.needsCoolant", t.localizedName);
         }
-        if(belt == null || !available(belt)) return "no conveyor available";
-        if(powerUsed() && powerNode() == null) return "power nodes aren't available here";
+        if(belt == null || !available(belt)) return Tr.t("def.noBelt");
+        if(powerUsed() && powerNode() == null) return Tr.t("def.noNodes");
         int area = (bx - ax + 1) * (by - ay + 1);
-        if(area > DefensePlanner.MAX_AREA) return "region too large (" + area + " tiles, at most " + DefensePlanner.MAX_AREA + "): it is filled completely - select a strip along the route";
+        if(area > DefensePlanner.MAX_AREA) return Tr.t("def.tooLarge", area, DefensePlanner.MAX_AREA);
         return null;
     }
 
@@ -156,16 +157,16 @@ public class DefenseJob extends BuildJob{
     /** existing building as an ammo source: it gives items out, or it's storage (an unloader takes them) */
     public static String itemSourceError(Building b){
         Block k = b.block;
-        if(k instanceof StorageBlock) return available(Blocks.unloader) ? null : "unloaders aren't available to take items from " + k.localizedName;
-        if(!k.hasItems || !k.outputsItems()) return k.localizedName + " doesn't give out items";
-        if(k instanceof ItemBridge ib && bridgeLinked(ib, b)) return "a linked bridge passes its items on: click its end";
+        if(k instanceof StorageBlock) return available(Blocks.unloader) ? null : Tr.t("def.noUnloader", k.localizedName);
+        if(!k.hasItems || !k.outputsItems()) return Tr.t("def.noOutput", k.localizedName);
+        if(k instanceof ItemBridge ib && bridgeLinked(ib, b)) return Tr.t("def.linkedBridge");
         return null;
     }
 
     public static String powerSourceError(Building b){
         Block k = b.block;
-        if(!k.hasPower || !k.connectedPower) return k.localizedName + " isn't part of a power grid";
-        if(!(k instanceof PowerNode || k instanceof Battery || k.outputsPower)) return k.localizedName + " only uses power: click a node, battery or generator";
+        if(!k.hasPower || !k.connectedPower) return Tr.t("def.notGrid", k.localizedName);
+        if(!(k instanceof PowerNode || k instanceof Battery || k.outputsPower)) return Tr.t("def.onlyUses", k.localizedName);
         return null;
     }
 
@@ -212,10 +213,10 @@ public class DefenseJob extends BuildJob{
     static String tags(Turret t){
         StringBuilder sb = new StringBuilder();
         sb.append(t.size).append("x").append(t.size).append(" r").append(Strings.autoFixed(t.range / tilesize, 0));
-        if(!t.targetAir) sb.append(" [lightgray]ground");
-        else if(!t.targetGround) sb.append(" [sky]air");
+        if(!t.targetAir) sb.append(Tr.t("def.tagGround"));
+        else if(!t.targetGround) sb.append(Tr.t("def.tagAir"));
         if(needsPower(t)) sb.append(" [accent]⚡");
-        if(t instanceof LiquidTurret || t instanceof LaserTurret) sb.append(" [sky]liquid");
+        if(t instanceof LiquidTurret || t instanceof LaserTurret) sb.append(Tr.t("def.tagLiquid"));
         return sb.toString();
     }
 
@@ -289,13 +290,13 @@ public class DefenseJob extends BuildJob{
         }
         if(ground + air <= 0){
             groundShare = 1f; airShare = 0.3f; enemyRange = 7f;
-            threatText = "[lightgray]No wave data: assuming mostly ground enemies";
+            threatText = Tr.t("def.noWaves");
             return;
         }
         groundShare = (float)(ground / (ground + air));
         airShare = (float)(air / (ground + air));
         enemyRange = ground > 0 ? (float)(rangeSum / ground) : 7f;
-        threatText = Strings.format("[lightgray]Next 20 waves: [white]@%[] ground, [sky]@%[] air (by health); ground enemies shoot ~@ tiles",
+        threatText = Tr.t("def.threat",
             Mathf.round(groundShare * 100), Mathf.round(airShare * 100), Strings.autoFixed(enemyRange, 1));
     }
 
@@ -350,9 +351,9 @@ public class DefenseJob extends BuildJob{
         Seq<Turret> all = availableTurrets();
         turrets.retainAll(all::contains);
         c.add(threatText).row();
-        if(previewRoutes.isEmpty()) c.add("[orange]No ground route found (no enemy spawn, or no core of yours): only flying units are considered").row();
+        if(previewRoutes.isEmpty()) c.add(Tr.t("def.noRoute")).row();
 
-        c.add("Turrets:").row();
+        c.add(Tr.t("def.turrets")).row();
         c.table(t -> {
             int i = 0;
             for(Turret tu : all){
@@ -384,7 +385,7 @@ public class DefenseJob extends BuildJob{
         ObjectSet<Item> takes = new ObjectSet<>();
         for(Turret tu : turrets) if(tu instanceof ItemTurret it) for(var e : it.ammoTypes) takes.add(e.key);
         if(!takes.isEmpty()){
-            c.add("Ammo (each is brought in by its own belt):").row();
+            c.add(Tr.t("def.ammo")).row();
             c.table(t -> {
                 Seq<Item> items = content.items().select(takes::contains);
                 int i = 0;
@@ -402,24 +403,24 @@ public class DefenseJob extends BuildJob{
         }
 
         c.table(t -> {
-            t.add("Liquid: ").padRight(6f);
+            t.add(Tr.t("def.liquid")).padRight(6f);
             for(Liquid l : Seq.with(Liquids.water, Liquids.cryofluid, Liquids.slag, Liquids.oil)){
                 if(!l.unlockedNow() && !state.rules.infiniteResources) continue;
                 t.button(b -> b.image(l.uiIcon).size(24f), Styles.flatTogglet, () -> { liquid = l; rebuild.run(); })
                     .checked(b -> liquid == l).size(44f, 40f).tooltip(l.localizedName);
             }
-            t.check("Coolant for turrets", coolant, b -> { coolant = b; rebuild.run(); }).padLeft(10f).disabled(b -> !coolantOk(liquid));
+            t.check(Tr.t("def.coolant"), coolant, b -> { coolant = b; rebuild.run(); }).padLeft(10f).disabled(b -> !coolantOk(liquid));
         }).row();
 
         c.table(t -> {
-            t.add("Walls: ").padRight(6f);
-            t.button("None", Styles.flatTogglet, () -> { wall = null; rebuild.run(); }).checked(b -> wall == null).size(80f, 40f);
+            t.add(Tr.t("def.walls")).padRight(6f);
+            t.button(Tr.t("def.none"), Styles.flatTogglet, () -> { wall = null; rebuild.run(); }).checked(b -> wall == null).size(80f, 40f);
             for(Block b : content.blocks()){
                 if(!(b instanceof Wall w) || b instanceof Door || w.size != 1 || !available(w) || largeWall(w) == null || w.name.contains("scrap")) continue;
                 t.button(bt -> bt.image(w.uiIcon).size(24f), Styles.flatTogglet, () -> { wall = w; rebuild.run(); })
                     .checked(bt -> wall == w).size(44f, 40f).tooltip(w.localizedName);
             }
-            t.add("  thickness ");
+            t.add(Tr.t("def.thickness")).padLeft(12f);
             for(int k = 1; k <= 2; k++){
                 int kk = k;
                 t.button("" + k, Styles.flatTogglet, () -> wallThickness = kk).checked(b -> wallThickness == kk).disabled(b -> wall == null).size(40f, 40f);
@@ -427,33 +428,33 @@ public class DefenseJob extends BuildJob{
         }).row();
 
         c.table(t -> {
-            t.add("Support: ").padRight(6f);
-            t.check("Menders", mender, b -> { mender = b; rebuild.run(); }).disabled(b -> !available(Blocks.mender)).padRight(8f);
-            t.check("Mend projectors", mendProjector, b -> { mendProjector = b; rebuild.run(); }).disabled(b -> !available(Blocks.mendProjector)).padRight(8f);
-            t.check("Force projectors", forceProjector, b -> { forceProjector = b; rebuild.run(); }).disabled(b -> !available(Blocks.forceProjector)).padRight(8f);
-            t.check("Shock mines on the route", mines, b -> mines = b).disabled(b -> !available(Blocks.shockMine));
+            t.add(Tr.t("def.support")).padRight(6f);
+            t.check(Tr.t("def.menders"), mender, b -> { mender = b; rebuild.run(); }).disabled(b -> !available(Blocks.mender)).padRight(8f);
+            t.check(Tr.t("def.mendp"), mendProjector, b -> { mendProjector = b; rebuild.run(); }).disabled(b -> !available(Blocks.mendProjector)).padRight(8f);
+            t.check(Tr.t("def.force"), forceProjector, b -> { forceProjector = b; rebuild.run(); }).disabled(b -> !available(Blocks.forceProjector)).padRight(8f);
+            t.check(Tr.t("def.mines"), mines, b -> mines = b).disabled(b -> !available(Blocks.shockMine));
         }).row();
 
         c.table(t -> {
-            t.add("Belts: ").padRight(6f);
+            t.add(Tr.t("def.belts")).padRight(6f);
             for(Block b : Seq.with(Blocks.conveyor, Blocks.titaniumConveyor).select(BuildJob::available)){
                 t.button(bt -> bt.image(b.uiIcon).size(24f), Styles.flatTogglet, () -> belt = b).checked(bt -> belt == b).size(44f, 40f).tooltip(b.localizedName);
             }
-            t.check("Bridges", bridges, b -> bridges = b).padLeft(8f).disabled(b -> !available(Blocks.itemBridge));
-            t.add("   Pipes: ").padRight(6f);
+            t.check(Tr.t("def.bridges"), bridges, b -> bridges = b).padLeft(8f).disabled(b -> !available(Blocks.itemBridge));
+            t.add(Tr.t("def.pipes")).padLeft(16f).padRight(6f);
             for(Block b : Seq.with(Blocks.conduit, Blocks.pulseConduit).select(BuildJob::available)){
                 t.button(bt -> bt.image(b.uiIcon).size(24f), Styles.flatTogglet, () -> conduit = b).checked(bt -> conduit == b).size(44f, 40f).tooltip(b.localizedName);
             }
         }).row();
 
         c.table(t -> {
-            t.add("Keep free around the route: ");
+            t.add(Tr.t("def.clearance"));
             for(int k = 1; k <= 3; k++){
                 int kk = k;
-                t.button(k + (k == 1 ? " tile" : " tiles"), Styles.flatTogglet, () -> clearance = kk).checked(b -> clearance == kk).size(84f, 40f);
+                t.button(Tr.t(k == 1 ? "def.tile" : "def.tiles", k), Styles.flatTogglet, () -> clearance = kk).checked(b -> clearance == kk).size(84f, 40f);
             }
         }).row();
-        c.label(() -> problem() == null ? "[lightgray]The region is filled completely (rows of walls, turrets and supply lanes on the side of the route with most room). Next you click where each ammo / liquid / power comes in - anywhere on the map; right-click lets the planner choose (just behind the region)."
+        c.label(() -> problem() == null ? Tr.t("def.hint")
             : "[scarlet]" + problem()).row();
     }
 
@@ -490,7 +491,7 @@ public class DefenseJob extends BuildJob{
         if(error != null) return null;
         Snapshot sn = new Snapshot();
         sn.map = mapData();
-        if(sn.map.targets.length == 0){ error = "your team has no core: enemies have nowhere to go"; return null; }
+        if(sn.map.targets.length == 0){ error = Tr.t("def.noCore"); return null; }
         sn.node = powerNode();
         sn.belt = belt;
         sn.bridge = bridges && available(Blocks.itemBridge) ? Blocks.itemBridge : null;
@@ -737,7 +738,7 @@ public class DefenseJob extends BuildJob{
         DefensePlanner.Ctl ctl = current = new DefensePlanner.Ctl();
         if(cancelled) throw new CancelledException();
         if(progress != null){
-            ctl.listener = (st, places) -> progress.frame("#" + variant + ": " + st, r.toPlans(places));
+            ctl.listener = (st, places) -> progress.frame("#" + variant + ": " + Tr.stage(st), r.toPlans(places));
             ctl.snapshotInterval = 2;
         }
         long time = Time.millis();
@@ -747,7 +748,7 @@ public class DefenseJob extends BuildJob{
             p.rw, p.rh, pl.templateName, pl.front, variant, ok, Strings.autoFixed((float)pl.score, 1), pl.turrets, pl.walls, pl.protectors, pl.pipes, pl.bridges, pl.nodes, pl.mines,
             Strings.autoFixed((float)pl.meanGroundDps, 0), Strings.autoFixed((float)pl.meanAirDps, 0), Strings.autoFixed((float)pl.coveredGround, 2), pl.routeChanged,
             Time.timeSinceMillis(time), ok ? "" : pl.failure);
-        if(!ok){ r.error = pl.failure; return r; }
+        if(!ok){ r.error = Tr.failure(pl.failureKey, pl.failureArgs, pl.failure); return r; }
         r.fill();
         return r;
     }
@@ -865,7 +866,7 @@ public class DefenseJob extends BuildJob{
 
         @Override
         public String portLabel(PortKind kind, int i){
-            if(kind == powerKind && i >= ports(kind).size - planner.extraPowerPorts.size()) return "(link this group too)";
+            if(kind == powerKind && i >= ports(kind).size - planner.extraPowerPorts.size()) return Tr.t("def.linkGroup");
             return null;
         }
 
@@ -875,10 +876,10 @@ public class DefenseJob extends BuildJob{
             for(PortKind k : ports.keys()){
                 Seq<Port> ps = ports.get(k);
                 if(ps.isEmpty()) continue;
-                if(t.length() > 0) t.append(", ");
-                t.append(k.name).append(": ");
+                if(t.length() > 0) t.append(Tr.t("sep"));
+                t.append(k.name()).append(Tr.t("colon"));
                 for(int i = 0; i < ps.size; i++) t.append(i > 0 ? "/" : "").append(ps.get(i).name());
-                if(autoKinds.contains(k)) t.append(" (auto)");
+                if(autoKinds.contains(k)) t.append(Tr.t("autoTag"));
             }
             return t.toString();
         }
@@ -896,30 +897,30 @@ public class DefenseJob extends BuildJob{
                 if(t.kind == DefensePlanner.TURRET || t.kind == DefensePlanner.MENDER || t.kind == DefensePlanner.SHIELD) counts.increment(sn.typeBlock[q.type].localizedName);
             }
             StringBuilder kinds = new StringBuilder();
-            for(var e : counts){ if(kinds.length() > 0) kinds.append(", "); kinds.append(e.value).append(' ').append(e.key); }
+            for(var e : counts){ if(kinds.length() > 0) kinds.append(Tr.t("sep")); kinds.append(e.value).append(' ').append(e.key); }
             sb.append(kinds);
-            if(pl.walls > 0) sb.append(", ").append(pl.walls).append(" walls");
-            if(pl.mines > 0) sb.append(", ").append(pl.mines).append(" shock mines");
-            sb.append(Strings.format("\nGround route: ~@ DPS, @% of it in range", Strings.autoFixed((float)pl.meanGroundDps, 0), Mathf.round((float)pl.coveredGround * 100)));
-            if(pl.p.airWeight > 0 && !pl.airRoutes.isEmpty()) sb.append(Strings.format("   Air: ~@ DPS, @% in range", Strings.autoFixed((float)pl.meanAirDps, 0), Mathf.round((float)pl.coveredAir * 100)));
-            sb.append(Strings.format("\n[lightgray]Supply: @ belts / pipes, @ bridges", pl.pipes, pl.bridges));
+            if(pl.walls > 0) sb.append(Tr.t("sep")).append(Tr.t("def.sumWalls", pl.walls));
+            if(pl.mines > 0) sb.append(Tr.t("sep")).append(Tr.t("def.sumMines", pl.mines));
+            sb.append("\n").append(Tr.t("def.ground", Strings.autoFixed((float)pl.meanGroundDps, 0), Mathf.round((float)pl.coveredGround * 100)));
+            if(pl.p.airWeight > 0 && !pl.airRoutes.isEmpty()) sb.append(Tr.t("def.air", Strings.autoFixed((float)pl.meanAirDps, 0), Mathf.round((float)pl.coveredAir * 100)));
+            sb.append("\n").append(Tr.t("def.supply", pl.pipes, pl.bridges));
             int cooled = 0;
             for(Built b : pl.built) if(b.cooled && pl.p.types[b.type].kind == DefensePlanner.TURRET && pl.p.types[b.type].coolantBoost > 1.001) cooled++;
-            if(cooled > 0) sb.append(", ").append(cooled).append(" turrets cooled with ").append(sn.liquid.localizedName);
-            if(pl.nodes > 0) sb.append(Strings.format(", @ power nodes, needs @ power/s", pl.nodes, Strings.autoFixed(powerUse, 1)));
+            if(cooled > 0) sb.append(Tr.t("sep")).append(Tr.t("def.cooledWith", cooled, sn.liquid.localizedName));
+            if(pl.nodes > 0) sb.append(Tr.t("def.nodes", pl.nodes, Strings.autoFixed(powerUse, 1)));
             sb.append("[]");
-            if(!pl.extraPowerPorts.isEmpty()) sb.append("\n[orange]Power: link ").append(pl.extraPowerPorts.size()).append(" more node group(s) to your grid (marked)");
-            if(pl.unpowered > 0) sb.append("\n[orange]").append(pl.unpowered).append(" block(s) out of reach of power nodes");
-            sb.append(pl.routeChanged ? "\n[orange]The enemy route moves with this layout (shown in orange)" : "\n[green]Enemy route unchanged[] [lightgray](kept " + pl.p.clearance + " tile(s) free around it)");
+            if(!pl.extraPowerPorts.isEmpty()) sb.append("\n").append(Tr.t("def.extraPower", pl.extraPowerPorts.size()));
+            if(pl.unpowered > 0) sb.append("\n").append(Tr.t("def.unpowered", pl.unpowered));
+            sb.append("\n").append(pl.routeChanged ? Tr.t("def.routeMoved") : Tr.t("def.routeSame", pl.p.clearance));
             // cost against the core
             CoreBlock.CoreBuild core = team.core();
             if(core != null && !state.rules.infiniteResources){
                 StringBuilder lack = new StringBuilder();
                 for(ItemStack st : cost){
                     int have = core.items.get(st.item);
-                    if(have < st.amount) lack.append(lack.length() > 0 ? ", " : "").append(st.amount - have).append(' ').append(st.item.localizedName);
+                    if(have < st.amount) lack.append(lack.length() > 0 ? Tr.t("sep") : "").append(st.amount - have).append(' ').append(st.item.localizedName);
                 }
-                if(lack.length() > 0) sb.append("\n[scarlet]Core lacks: ").append(lack);
+                if(lack.length() > 0) sb.append("\n").append(Tr.t("def.lacks", lack));
             }
             return sb.toString();
         }

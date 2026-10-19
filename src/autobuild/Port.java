@@ -24,5 +24,5 @@ public class Port{
 
     public static Port at(int x, int y){ Port p = new Port(); p.x = x; p.y = y; return p; }
 
-    public String name(){ return existing != null ? existing.block.localizedName : edge ? dirNames[side] : "(" + x + "," + y + ")"; }
+    public String name(){ return existing != null ? existing.block.localizedName : edge ? Tr.or("dir." + side, dirNames[side]) : "(" + x + "," + y + ")"; }
 }
