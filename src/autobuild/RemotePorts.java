@@ -180,30 +180,42 @@ public class RemotePorts{
 
     boolean inGrid(int x, int y){ return x >= gx && y >= gy && x < gx + gw && y < gy + gh; }
 
-    /** free tiles a line could reach from these world tiles (steps, and bridge jumps over anything): grid flags; null = no limit */
-    boolean[][] reach;
+    /**
+     * Path cost from these world tiles over free ground, the way the lines are routed (a step costs
+     * 1, a bridge jump over anything 1 + the jump cost): grid values, MAX_VALUE = unreachable.
+     */
+    float[][] reach;
 
-    boolean[][] flood(Seq<int[]> from, int range){
-        boolean[][] seen = new boolean[gw][gh];
-        IntQueue q = new IntQueue();
+    float[][] flood(Seq<int[]> from, int range){
+        float[][] dist = new float[gw][gh];
+        for(float[] r : dist) Arrays.fill(r, Float.MAX_VALUE);
+        PriorityQueue<long[]> q = new PriorityQueue<>(Comparator.comparingLong(a -> a[0]));
         for(int[] t : from){
             if(!freeAt(t[0], t[1])) continue;
             int u = t[0] - gx, v = t[1] - gy;
-            if(!seen[u][v]){ seen[u][v] = true; q.addLast(u * gh + v); }
+            if(dist[u][v] > 0){ dist[u][v] = 0; q.add(new long[]{0, u * gh + v}); }
         }
-        while(q.size > 0){
-            int id = q.removeFirst(), u = id / gh, v = id % gh;
+        // costs in tenths, as integers
+        int step = 10, jump = 25;
+        while(!q.isEmpty()){
+            long[] cur = q.poll();
+            int id = (int)cur[1], u = id / gh, v = id % gh;
+            if(cur[0] > dist[u][v] * 10 + 0.5f) continue;
             for(int d = 0; d < 4; d++){
                 for(int k = 1; k <= Math.max(1, range); k++){
                     int nu = u + Geometry.d4x(d) * k, nv = v + Geometry.d4y(d) * k;
                     if(nu < 0 || nv < 0 || nu >= gw || nv >= gh) break;
-                    if(!free[nu][nv] || seen[nu][nv]) continue;
-                    seen[nu][nv] = true;
-                    q.addLast(nu * gh + nv);
+                    if(!free[nu][nv]) continue;
+                    if(k > 1 && range < 2) break;
+                    long nc = cur[0] + (k == 1 ? step : jump);
+                    if(nc < dist[nu][nv] * 10 - 0.5f){
+                        dist[nu][nv] = nc / 10f;
+                        q.add(new long[]{nc, nu * gh + nv});
+                    }
                 }
             }
         }
-        return seen;
+        return dist;
     }
 
     /** free tiles next to a footprint {x, y, size} */
@@ -219,7 +231,12 @@ public class RemotePorts{
 
     /** a line from this edge-output tile could reach the target */
     boolean reachable(int x, int y){
-        return reach == null || (inGrid(x, y) && reach[x - gx][y - gy]);
+        return reach == null || (inGrid(x, y) && reach[x - gx][y - gy] < Float.MAX_VALUE);
+    }
+
+    /** path cost from the edge-output tile to the target (geometry when unknown) */
+    float distance(int x, int y){
+        return reach == null || !inGrid(x, y) ? 0f : reach[x - gx][y - gy];
     }
 
     boolean freeAt(int x, int y){ return inGrid(x, y) && free[x - gx][y - gy]; }
@@ -266,6 +283,43 @@ public class RemotePorts{
 
     /** as above, never on the sides in the `avoid` bit mask */
     Seq<Port> edgePorts(int[] t, int lines, int avoid){
+        // the edge spots from which a line to the target is shortest (by the way, not the direction:
+        // around rocks the nearest exit may be on another side)
+        Seq<int[]> cand = new Seq<>(); // {side, pos, cost x 100}
+        float cx0 = t[0] + (t[2] - 1) / 2f, cy0 = t[1] + (t[2] - 1) / 2f;
+        for(int side = 0; side < 4; side++){
+            if((avoid & (1 << side)) != 0) continue;
+            boolean vertical = side % 2 == 0;
+            int lo = vertical ? ay : ax, hi = vertical ? by : bx;
+            for(int pos = lo; pos <= hi; pos++){
+                int ex = vertical ? (side == 0 ? bx : ax) : pos, ey = vertical ? pos : (side == 1 ? by : ay);
+                int sx = ex + Geometry.d4x(side), sy = ey + Geometry.d4y(side);
+                if(!freeAt(sx, sy) || !reachable(sx, sy) || nearAvoided(ex, ey, avoid)) continue;
+                // ties: the spot nearer the target
+                float cost = distance(sx, sy) + 0.01f * (Math.abs(sx - cx0) + Math.abs(sy - cy0));
+                cand.add(new int[]{side, pos, (int)(cost * 100)});
+            }
+        }
+        if(reach != null && !cand.isEmpty()){
+            cand.sort(c -> c[2]);
+            Seq<Port> out = new Seq<>();
+            Seq<int[]> chosen = new Seq<>();
+            for(int[] c : cand){
+                if(out.size >= lines) break;
+                // lines at least 2 apart along the edge
+                if(chosen.contains(o -> o[0] == c[0] && Math.abs(o[1] - c[1]) < 2)) continue;
+                chosen.add(c);
+                boolean vertical = c[0] % 2 == 0;
+                int lo = vertical ? ay : ax, hi = vertical ? by : bx;
+                out.add(Port.edge(c[0], hi == lo ? 0.5f : (c[1] - lo) / (float)(hi - lo)));
+            }
+            return out;
+        }
+        return edgePortsFacing(t, lines, avoid);
+    }
+
+    /** without a reachable spot: the side facing the target */
+    Seq<Port> edgePortsFacing(int[] t, int lines, int avoid){
         float cx = t[0] + (t[2] - 1) / 2f, cy = t[1] + (t[2] - 1) / 2f;
         float[] beyond = {cx - bx, cy - by, ax - cx, ay - cy};
         Integer[] sides = {0, 1, 2, 3};

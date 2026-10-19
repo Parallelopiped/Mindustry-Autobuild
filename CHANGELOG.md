@@ -7,6 +7,12 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-10-19
+### Changed
+- Exits of lines to ports away from the region are chosen by the length of the way to the target,
+  not by its direction: when rocks make the way out lead through another side, the field sends its
+  items to that side directly instead of to the side facing the target and back along the region.
+
 ## [1.3.3] - 2026-10-19
 ### Fixed
 - Lines to ports outside the region found no path along long, winding ways (e.g. Maze: field in
@@ -295,6 +301,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.4]: #
 [1.3.3]: #
 [1.3.2]: #
 [1.3.1]: #
