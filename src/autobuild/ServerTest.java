@@ -43,6 +43,7 @@ public class ServerTest{
             boolean bridges = true, mix = true, water = false;
             int existing = 0, another = 0;
             String regionAt = null;
+            int rw = 0, rh = 0;
             String waterSpec = "auto";
             // a variadic "[options...]" parameter arrives as one space-joined string
             Seq<String> opts = new Seq<>();
@@ -59,6 +60,8 @@ public class ServerTest{
                     case "existing": existing = Strings.parseInt(kv[1], 0); break;
                     case "another": another = Strings.parseInt(kv[1], 0); break;
                     case "region": regionAt = kv[1]; break;
+                    case "w": rw = Strings.parseInt(kv[1], 0); break;
+                    case "h": rh = Strings.parseInt(kv[1], 0); break;
                     default: Log.err("unknown option @", opt); return;
                 }
             }
@@ -73,7 +76,8 @@ public class ServerTest{
             if(regionAt != null){
                 // a fixed region: its lower left corner
                 String[] xy = regionAt.split(":");
-                job.ax = Strings.parseInt(xy[0]); job.ay = Strings.parseInt(xy[1]); job.bx = job.ax + size - 1; job.by = job.ay + size - 1;
+                job.ax = Strings.parseInt(xy[0]); job.ay = Strings.parseInt(xy[1]);
+                job.bx = job.ax + (rw > 0 ? rw : size) - 1; job.by = job.ay + (rh > 0 ? rh : size) - 1;
             }else if(!densest(job, item, size)){ Log.err("no @ ore on this map", item.name); return; }
             existingPorts.clear();
             if(!parsePorts(job, args[2], job.outs) || !parsePorts(job, waterSpec, job.waters)){ Log.err("bad port list"); return; }

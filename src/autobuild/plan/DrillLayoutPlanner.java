@@ -61,6 +61,8 @@ public class DrillLayoutPlanner{
         /** Item.lowPriority by item id (sand); null = none */
         public boolean[] lowPriority;
         public Mode mode = Mode.OUTPUT;
+        /** prices of belts / bridges / pipes / nodes as in this mode (null = `mode`): efficiency drills with max-output logistics */
+        public Mode logistics;
         public boolean power;
         /** laser range in tiles, max links per node */
         public float nodeRange = 6f;
@@ -120,7 +122,7 @@ public class DrillLayoutPlanner{
             Params q = new Params();
             q.W = W; q.H = H; q.drillSize = drillSize; q.target = target; q.portV = portV;
             q.beltOk = beltOk; q.nodeOk = nodeOk; q.drillOk = drillOk; q.drop = drop; q.lowPriority = lowPriority;
-            q.mode = mode; q.power = power; q.nodeRange = nodeRange; q.nodeMaxLinks = nodeMaxLinks;
+            q.mode = mode; q.logistics = logistics; q.power = power; q.nodeRange = nodeRange; q.nodeMaxLinks = nodeMaxLinks;
             q.bridges = bridges; q.bridgeRange = bridgeRange; q.seed = seed;
             q.water = water; q.waterBoost = waterBoost; q.waterSide = waterSide; q.waterPos = waterPos; q.liquidBridgeRange = liquidBridgeRange;
             q.variant = variant;
@@ -535,7 +537,7 @@ public class DrillLayoutPlanner{
      */
     void drillFirst(){
         // A* cost units (tiles, bridge ~1.5-2.5) -> ore tiles of value
-        double kappa = p.mode == Mode.OUTPUT ? 0.12 : 0.15;
+        double kappa = lmode() == Mode.OUTPUT ? 0.12 : 0.15;
         List<int[]> cands = candidates();
         double vmax = 0;
         for(int[] c : cands) vmax = Math.max(vmax, drillValue(c[0], c[1], c[2]));
@@ -953,9 +955,12 @@ public class DrillLayoutPlanner{
      * Routing costs are in occupied tiles: a conveyor step occupies one tile, a bridge jump of any
      * length occupies one tile (the landing) plus a material premium.
      */
-    float jumpCost(){ return p.mode == Mode.OUTPUT ? 1.5f : 2.5f; }
+    /** the mode logistics are priced in */
+    Mode lmode(){ return p.logistics != null ? p.logistics : p.mode; }
 
-    float liquidJumpCost(){ return p.mode == Mode.OUTPUT ? 1.3f : 2.5f; }
+    float jumpCost(){ return lmode() == Mode.OUTPUT ? 1.5f : 2.5f; }
+
+    float liquidJumpCost(){ return lmode() == Mode.OUTPUT ? 1.3f : 2.5f; }
 
     /** lanes / water rows are split where drills are further apart than this (tiles) */
     static final int splitGap = 2;
@@ -966,14 +971,14 @@ public class DrillLayoutPlanner{
      * otherwise remote ore patches in a large region never pay for their connection and plans with
      * negative scores win. The drill-on-ore threshold (0.5 * size^2) is what efficiency means.
      */
-    double beltCost(){ return p.mode == Mode.OUTPUT ? 0.01 : 0.05; }
+    double beltCost(){ return lmode() == Mode.OUTPUT ? 0.01 : 0.05; }
 
-    double waterTileCost(){ return p.mode == Mode.OUTPUT ? 0.02 : 0.06; }
+    double waterTileCost(){ return lmode() == Mode.OUTPUT ? 0.02 : 0.06; }
 
-    double nodeCost(){ return p.mode == Mode.OUTPUT ? 0.05 : 0.2; }
+    double nodeCost(){ return lmode() == Mode.OUTPUT ? 0.05 : 0.2; }
 
     /** A bridge costs ~12x a conveyor in materials. */
-    double bridgeCost(){ return p.mode == Mode.OUTPUT ? 0.05 : 0.4; }
+    double bridgeCost(){ return lmode() == Mode.OUTPUT ? 0.05 : 0.4; }
 
     // ------------------------------------------------------------------ layout: lanes
 

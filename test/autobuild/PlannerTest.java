@@ -57,7 +57,7 @@ public class PlannerTest{
         return m;
     }
 
-    static boolean[][] drillOk(Map m, int s){
+    public static boolean[][] drillOk(Map m, int s){
         boolean[][] d = new boolean[m.W][m.H];
         for(int x = 0; x + s <= m.W; x++) for(int y = 0; y + s <= m.H; y++){
             boolean ok = true, ore = false;

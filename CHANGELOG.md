@@ -7,6 +7,18 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-10-19
+### Fixed
+- Drill field with water and several outputs: the automatic water port went to the middle of the
+  side opposite the first output - often right in front of another output's exit, which then got
+  nothing (and the ore near it stayed unmined). It now goes to a side without outputs, or as far
+  from them as that side allows.
+### Added
+- Material efficiency with an output left unused: planned again with max-output prices for belts
+  / bridges (drills still at least half on ore); kept when the field gains at least 10% (and
+  0.5/s), otherwise the summary says how much that output would add.
+- Server test: `w=` / `h=` for non-square regions.
+
 ## [1.3.4] - 2026-10-19
 ### Changed
 - Exits of lines to ports away from the region are chosen by the length of the way to the target,
@@ -301,6 +313,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.5]: #
 [1.3.4]: #
 [1.3.3]: #
 [1.3.2]: #

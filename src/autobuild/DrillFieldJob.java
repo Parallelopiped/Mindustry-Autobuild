@@ -63,6 +63,8 @@ public class DrillFieldJob extends BuildJob{
     public final Seq<Port> outs = outKind.picks, waters = waterKind.picks;
 
     volatile DrillLayoutPlanner current;
+    /** price logistics as in this mode while planning (null = the chosen mode) */
+    Mode logisticsMode;
 
     @Override
     public String name(){ return Tr.t("drill.name"); }
@@ -372,6 +374,8 @@ public class DrillFieldJob extends BuildJob{
         /** player ports no line could reach */
         public final Seq<String> unreached = new Seq<>();
         public boolean outAuto, waterAuto;
+        /** what happened to an output the efficiency plan left unused, or null */
+        public String longLinesNote;
         /** water was wanted but the network couldn't beat a layout without it */
         public boolean waterSkipped;
         /** per output: world tile the items go into, items/s delivered */
@@ -512,6 +516,7 @@ public class DrillFieldJob extends BuildJob{
             if(excessFlow > 0.1f) sb.append("\n").append(Tr.t("drill.excess", Strings.autoFixed(excessFlow, 1)));
             if(remote != null && remote.any && remote.trunkTiles > 0) sb.append("\n").append(Tr.t("drill.trunk", remote.trunkTiles));
             for(String u : unreached) sb.append("\n").append(Tr.t("drill.unreached", u));
+            if(longLinesNote != null) sb.append("\n").append(longLinesNote);
             if(planner.segmentsDropped > 0) sb.append("\n").append(Tr.t("drill.dropped", planner.segmentsDropped));
             if(planner.drillsDroppedForPower > 0) sb.append("\n").append(Tr.t("drill.powerDropped", planner.drillsDroppedForPower));
             if(planner.powerGroups > 1) sb.append("\n").append(Tr.t("drill.groups", planner.powerGroups));
@@ -530,7 +535,7 @@ public class DrillFieldJob extends BuildJob{
         int W = f.W, H = f.H;
 
         Params p = new Params();
-        p.W = W; p.H = H; p.drillSize = sn.s; p.target = target.id; p.mode = mode; p.power = sn.power; p.variant = variant;
+        p.W = W; p.H = H; p.drillSize = sn.s; p.target = target.id; p.mode = mode; p.logistics = logisticsMode; p.power = sn.power; p.variant = variant;
         p.bridges = sn.bridge != null;
         if(sn.bridge != null) p.bridgeRange = sn.bridge.range;
         if(sn.node0 != null){ p.nodeRange = sn.node0.laserRange; p.nodeMaxLinks = sn.node0.maxNodes; }
@@ -686,6 +691,31 @@ public class DrillFieldJob extends BuildJob{
                 if(b2 != null && b2.ok() && b2.itemsPerSecond >= best.itemsPerSecond * 0.98f){ best = b2; remote = lim; }
             }
         }
+        // material efficiency left an output the player picked without load: the ore that could reach
+        // it doesn't pay for its (long) lines at efficiency prices. Try with max-output logistics prices
+        // (drills still only where half of them is ore); keep it if the field gains enough.
+        if(mode == Mode.EFFICIENCY && this.outs.size > 1){
+            int unused = -1;
+            double[] per = userLoads(best, remote, this.outs.size);
+            for(int i = 0; i < per.length; i++) if(per[i] < 0.05) unused = i;
+            if(unused >= 0){
+                logisticsMode = Mode.OUTPUT;
+                Candidate h;
+                try{ h = searchPorts(sn, outs, waters, variantBase, variants, progress); }
+                finally{ logisticsMode = null; }
+                float gain = h != null && h.ok() ? h.itemsPerSecond - best.itemsPerSecond : 0f;
+                Port up = this.outs.get(unused);
+                if(gain >= Math.max(0.5f, 0.1f * best.itemsPerSecond)){
+                    h.longLinesNote = Tr.t("drill.longLinesUsed", up.name(), Strings.autoFixed(gain, 1));
+                    best = h;
+                    remote = sn.remote;
+                }else if(gain > 0.05f){
+                    best.longLinesNote = Tr.t("drill.longLinesWeak", up.name(), Strings.autoFixed(gain, 1));
+                }else{
+                    best.longLinesNote = Tr.t("drill.longLinesNone", up.name());
+                }
+            }
+        }
         // the player's ports, and the lines to those away from the region
         if(!this.outs.isEmpty()) best.userOuts = new Seq<>(this.outs);
         if(!this.waters.isEmpty() && !best.waterPorts.isEmpty()) best.userWaters = new Seq<>(this.waters);
@@ -697,6 +727,33 @@ public class DrillFieldJob extends BuildJob{
             best.unreached.set(remote.unreached);
         }
         return best;
+    }
+
+    /**
+     * An automatic water port: on `side` (or, if `moveSide`, the first side without an item output
+     * - its router would stand in front of that output's exit), else on `side` as far from the
+     * outputs there as possible.
+     */
+    Port autoWater(int side, Seq<Port> outPorts, boolean moveSide){
+        if(moveSide){
+            for(int s : new int[]{side, (side + 1) % 4, (side + 3) % 4}){
+                if(!outPorts.contains(o -> o.edge && o.side == s)) return Port.edge(s, 0.5f);
+            }
+        }
+        float best = 0.5f, bestGap = -1f;
+        for(int i = 1; i <= 9; i++){
+            float f = i / 10f, gap = 1f;
+            for(Port o : outPorts) if(o.edge && o.side == side) gap = Math.min(gap, Math.abs(o.frac - f));
+            if(gap > bestGap + 1e-4f || Math.abs(gap - bestGap) <= 1e-4f && Math.abs(f - 0.5f) < Math.abs(best - 0.5f)){ bestGap = gap; best = f; }
+        }
+        return Port.edge(side, best);
+    }
+
+    /** items/s per port the player picked (the planner's ports stand for them) */
+    static double[] userLoads(Candidate c, RemotePorts remote, int n){
+        double[] per = new double[n];
+        for(int k = 0; k < c.loads.length && k < remote.outOwner.size; k++) per[remote.outOwner.get(k)] += c.loads[k];
+        return per;
     }
 
     Candidate searchPorts(Snapshot sn, Seq<Port> outs, Seq<Port> waters, int variantBase, int variants, Progress progress){
@@ -712,7 +769,7 @@ public class DrillFieldJob extends BuildJob{
         for(Object[] o : options){
             int dir = (int)o[0];
             @SuppressWarnings("unchecked") Seq<Port> os = (Seq<Port>)o[1];
-            Seq<Port> ws = !sn.waterOn ? new Seq<>() : !waters.isEmpty() ? new Seq<>(waters) : Seq.with(Port.edge((dir + 2) % 4, 0.5f));
+            Seq<Port> ws = !sn.waterOn ? new Seq<>() : !waters.isEmpty() ? new Seq<>(waters) : Seq.with(autoWater((dir + 2) % 4, os, true));
             Candidate c = plan(sn, dir, os, ws, variantBase, progress);
             c.outAuto = outs.isEmpty(); c.waterAuto = sn.waterOn && waters.isEmpty();
             if(c.ok() && (best == null || c.score() > best.score())) best = c;
@@ -721,8 +778,10 @@ public class DrillFieldJob extends BuildJob{
         if(best != null && sn.waterOn && waters.isEmpty()){
             Candidate b = best;
             for(int wd = 0; wd < 4; wd++){
-                if(wd == (b.outDir + 2) % 4) continue;
-                Candidate c = plan(sn, b.outDir, b.outPorts, Seq.with(Port.edge(wd, 0.5f)), variantBase, progress);
+                Port wp = autoWater(wd, b.outPorts, false);
+                Port first = autoWater((b.outDir + 2) % 4, b.outPorts, true);
+                if(wp.side == first.side && Math.abs(wp.frac - first.frac) < 1e-3f) continue;
+                Candidate c = plan(sn, b.outDir, b.outPorts, Seq.with(wp), variantBase, progress);
                 c.outAuto = b.outAuto; c.waterAuto = true;
                 if(c.ok() && c.score() > best.score()) best = c;
             }
@@ -732,7 +791,7 @@ public class DrillFieldJob extends BuildJob{
             for(int v = variantBase + 1; v < variantBase + variants; v++){
                 // the player's water ports stay (a variant that couldn't use them shows "water skipped")
                 Seq<Port> wv = !sn.waterOn ? new Seq<>() : !waters.isEmpty() ? new Seq<>(waters)
-                    : b.waterPorts.isEmpty() ? Seq.with(Port.edge((b.outDir + 2) % 4, 0.5f)) : b.waterPorts;
+                    : b.waterPorts.isEmpty() ? Seq.with(autoWater((b.outDir + 2) % 4, b.outPorts, true)) : b.waterPorts;
                 Candidate c = plan(sn, b.outDir, b.outPorts, wv, v, progress);
                 c.outAuto = b.outAuto; c.waterAuto = b.waterAuto;
                 if(c.ok() && c.score() > best.score()) best = c;
