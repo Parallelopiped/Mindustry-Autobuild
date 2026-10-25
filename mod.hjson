@@ -3,6 +3,6 @@ name: "autobuild"
 author: "Maiolao"
 main: "autobuild.AutoBuildMod"
 description: "Select a region and auto-build it: drill fields (main feature) - drills of mixed tiers, belts and bridges, water, power, outputs anywhere on the map - and, experimental, defenses along the enemy route. Preview the plan, try alternatives, then build. English / 简体中文."
-version: "1.3.5"
+version: "1.3.6"
 minGameVersion: 160
 java: true

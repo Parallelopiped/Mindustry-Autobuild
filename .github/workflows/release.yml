@@ -24,11 +24,11 @@ jobs:
     - name: Build mod jar
       run: |
         chmod +x ./gradlew
-        ./gradlew deploy
+        ./gradlew jar
     - name: Upload release artifact
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         gh release upload "${{ github.event.release.tag_name }}" \
-          "build/libs/${{ github.event.repository.name }}.jar" \
+          "build/libs/mindustry-autobuildDesktop.jar" \
           --clobber

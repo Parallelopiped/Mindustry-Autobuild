@@ -19,10 +19,10 @@ jobs:
     - name: Build mod jar
       run: |
         chmod +x ./gradlew
-        ./gradlew deploy
+        ./gradlew jar
     - name: Upload built jar file
       uses: actions/upload-artifact@v7
       with:
         archive: false
-        name: ${{ github.event.repository.name }}
-        path: build/libs/${{ github.event.repository.name }}.jar
+        name: mindustry-autobuildDesktop
+        path: build/libs/mindustry-autobuildDesktop.jar

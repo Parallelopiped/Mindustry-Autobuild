@@ -6,12 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 change behaviour or settings).
 
 ## [Unreleased]
+
+## [1.3.6] - 2026-10-25
+First public release. Mod behaviour as in 1.3.5.
 ### Added
 - README in English and Simplified Chinese (features, core algorithms, tests, build), with GIFs
   from in-game footage; license: CC BY-NC-SA 4.0.
 - Client self-test: `-Dautobuild.record=<dir>` records frames at a fixed time step (footage).
 ### Changed
 - `deploy.sh` finds the Windows mods folder itself (or `MINDUSTRY_WIN_MODS`).
+- CI and release workflows build and publish the desktop jar (`mindustry-autobuildDesktop.jar`).
 
 ## [1.3.5] - 2026-10-19
 ### Fixed
@@ -319,6 +323,7 @@ change behaviour or settings).
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.6]: #
 [1.3.5]: #
 [1.3.4]: #
 [1.3.3]: #
