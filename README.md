@@ -285,12 +285,12 @@ Please run `./test.sh` before a pull request, and describe how you checked a cha
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](LICENSE). Copyright © 2026 Maiolao.
+[CC BY-NC-SA 4.0](LICENSE) (Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+International). Copyright © 2026 Maiolao.
 
-You may use, modify and share this mod for **any non-commercial purpose**: playing, learning,
-research, non-profit work. **Commercial use is not permitted.** Keep the license and the copyright
-notice with any copy.
+- **Attribution**: credit the author and link to this repository and the license.
+- **NonCommercial**: no commercial use.
+- **ShareAlike**: modified versions must be shared under the same license.
 
-This is a *source-available* license, not an OSI "open source" one, because it forbids commercial
-use. Mindustry itself is © Anuken and licensed separately (GPL-3.0); this mod contains no Mindustry
-code.
+Because it forbids commercial use, this is not an OSI "open source" license. Mindustry itself is ©
+Anuken and licensed separately (GPL-3.0); this mod contains no Mindustry code.

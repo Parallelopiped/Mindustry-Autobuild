@@ -8,7 +8,7 @@ change behaviour or settings).
 ## [Unreleased]
 ### Added
 - README in English and Simplified Chinese (features, core algorithms, tests, build), with GIFs
-  from in-game footage; license: PolyForm Noncommercial 1.0.0.
+  from in-game footage; license: CC BY-NC-SA 4.0.
 - Client self-test: `-Dautobuild.record=<dir>` records frames at a fixed time step (footage).
 ### Changed
 - `deploy.sh` finds the Windows mods folder itself (or `MINDUSTRY_WIN_MODS`).
