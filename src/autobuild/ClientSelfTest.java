@@ -29,6 +29,7 @@ public class ClientSelfTest{
     int planned;
 
     final boolean water, autoPorts, defense;
+    final String mapSpec;
     boolean sawReplay, shotReplay;
     float previewShotAt = -1f, previewShotAt2 = -1f;
     String shot;
@@ -39,13 +40,25 @@ public class ClientSelfTest{
         this.mod = mod;
         String[] parts = spec.split(":");
         this.mapName = parts[0];
+        this.mapSpec = spec;
         this.water = spec.contains(":water");
         this.autoPorts = spec.contains(":auto");
         this.defense = spec.contains(":defense");
         Events.on(ClientLoadEvent.class, e -> Time.runTask(30f, this::start));
         Events.run(Trigger.update, this::update);
         // screenshots for checking what the player actually sees
+        recDir = System.getProperty("autobuild.record");
+        if(recDir != null){
+            // footage: a fixed time step per frame (30 fps of game time), whatever the capture costs
+            Time.setDeltaProvider(() -> fastForward ? 8f : 2f);
+            new arc.files.Fi(recDir).mkdirs();
+        }
         Events.run(Trigger.uiDrawEnd, () -> {
+            if(rec && recDir != null && !fastForward){
+                var pix = arc.util.ScreenUtils.getFrameBufferPixmap(0, 0, Core.graphics.getWidth(), Core.graphics.getHeight(), true);
+                arc.graphics.PixmapIO.writePng(new arc.files.Fi(recDir).child(Strings.format("f@.png", String.format("%05d", recFrame++))), pix);
+                pix.dispose();
+            }
             if(shot == null) return;
             var pix = arc.util.ScreenUtils.getFrameBufferPixmap(0, 0, Core.graphics.getWidth(), Core.graphics.getHeight(), true);
             var file = Core.settings.getDataDirectory().child("selftest-" + shot + ".png");
@@ -71,7 +84,7 @@ public class ClientSelfTest{
     void update(){
         if(phase == 0) return;
         timer += Time.delta / 60f;
-        if(timer > 150f){ fail("timeout in phase " + phase); return; }
+        if(timer > (phase == 14 ? 600f : 150f)){ fail("timeout in phase " + phase); return; }
         if(phase >= 9){ updateDefense(); return; }
         switch(phase){
             case 1: // wait for the world and player unit, then go through the real UI flow
@@ -82,15 +95,18 @@ public class ClientSelfTest{
                 if(state.isGame() && player.unit() != null && !player.unit().dead && timer > 3f){
                     DrillFieldJob job = mod.drillJob;
                     mod.job = job;
-                    if(!ServerTest.densest(job, Items.copper, 24)){ fail("no copper"); return; }
+                    // ":laser": the advanced blocks (laser drills on titanium, pulse conduits), a bigger region
+                    boolean laser = mapSpec.contains(":laser");
+                    mindustry.type.Item ore = Items.copper;
+                    if(!ServerTest.densest(job, ore, laser ? 30 : 24)){ fail("no " + ore.name); return; }
                     mod.selectRegion(job.ax, job.ay, job.bx, job.by);
-                    job.target = Items.copper;
-                    job.drill = (Drill)Blocks.mechanicalDrill;
+                    job.target = ore;
+                    job.drill = (Drill)(laser ? Blocks.laserDrill : Blocks.mechanicalDrill);
                     job.belt = Blocks.titaniumConveyor;
                     job.bridges = true;
                     job.mode = Mode.OUTPUT;
                     job.water = water;
-                    job.conduit = Blocks.conduit;
+                    job.conduit = laser ? Blocks.pulseConduit : Blocks.conduit;
                     Log.info("[selftest] region (@,@)-(@,@), output @, water @", job.ax, job.ay, job.bx, job.by, autoPorts ? "auto" : "East (clicked)", water ? "auto" : "off");
                     mod.startPicking();
                     // clicks the player can make: on the edge, inside the region, far away on open ground
@@ -103,9 +119,12 @@ public class ClientSelfTest{
                     if(autoPorts) mod.autoKind();
                     else{
                         mod.addPick(job.classify(job.bx + 2, (job.ay + job.by) / 2));
+                        // footage with the advanced blocks: a second output, so one belt's capacity doesn't cap the field
+                        if(mapSpec.contains(":laser")) mod.addPick(job.classify(job.ax - 2, (job.ay + job.by) / 2));
                         mod.finishKind();
                     }
                     if(water) mod.autoKind();
+                    rec = true;
                     phase = 2;
                 }
                 break;
@@ -122,7 +141,8 @@ public class ClientSelfTest{
                         Strings.stripColors(c.summary()).replace('\n', ' '), c.portText(), Strings.autoFixed((float)c.score(), 1));
                     if(!sawReplay || mod.frames.size < 2){ fail("no gray replay"); return; }
                     if(previewShotAt < 0){ shot = "preview"; previewShotAt = timer; }
-                    if(timer - previewShotAt < 0.5f) return; // let the screenshot happen first
+                    if(timer - previewShotAt < (recDir != null ? 2.5f : 0.5f)) return; // let the screenshot happen first
+                    rec = false;
                     mod.anotherPlan();
                     phase = 3;
                 }else if(mod.phase == AutoBuildMod.State.idle){ fail("planning failed"); return; }
@@ -146,18 +166,19 @@ public class ClientSelfTest{
                 break;
             case 5: // two outputs now
                 keepNearRegion();
-                if(mod.phase == AutoBuildMod.State.preview && mod.current() instanceof DrillFieldJob.Candidate cc && cc.outPorts.size == 2){
+                if(mod.phase == AutoBuildMod.State.preview && mod.current() instanceof DrillFieldJob.Candidate cc && cc.outPorts.size >= 2 && cc.ports(mod.drillJob.outKind).size >= (mapSpec.contains(":laser") ? 3 : 2)){
                     DrillFieldJob.Candidate c = (DrillFieldJob.Candidate)mod.current();
                     if(previewShotAt2 < 0){
                         Log.info("[selftest] with 2 outputs: @ | loads @", c.portText(), java.util.Arrays.toString(c.loads));
                         // (the second output only carries load when one line can't take the whole field)
-                        if(c.loads.length != 2){ fail("second output missing"); return; }
+                        if(c.loads.length < 2){ fail("second output missing"); return; }
                         shot = "outputs"; previewShotAt2 = timer;
                     }
                     if(timer - previewShotAt2 < 0.5f) return;
                     planned = c.plans.size;
                     built = c;
                     mod.commit();
+                    rec = true;
                     phase = 4;
                     timer = 0f;
                 }else if(mod.phase == AutoBuildMod.State.idle){ fail("add output failed"); return; }
@@ -166,6 +187,23 @@ public class ClientSelfTest{
                 BuildJob job = mod.job;
                 player.unit().set((job.ax + job.bx) / 2f * tilesize, (job.ay + job.by) / 2f * tilesize);
                 if(player.unit().plans().isEmpty() || timer > 90f){
+                    if(recDir != null && holdFrom < 0){
+                        holdFrom = timer;
+                        // a power source next to the first node, so laser drills run in the footage
+                        for(BuildPlan p : built.plans){
+                            if(!(p.block instanceof mindustry.world.blocks.power.PowerNode)) continue;
+                            for(int d = 0; d < 4; d++){
+                                var t = world.tile(p.x + arc.math.geom.Geometry.d4x(d) * 2, p.y + arc.math.geom.Geometry.d4y(d) * 2);
+                                if(t != null && t.build == null && !t.solid()){
+                                    t.setBlock(Blocks.powerSource, player.team(), 0);
+                                    if(t.build != null) t.build.placed();
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if(recDir != null && timer - holdFrom < 4f) break;
                     int done = 0;
                     for(BuildPlan p : built.plans){
                         var t = world.tile(p.x, p.y);
@@ -173,6 +211,7 @@ public class ClientSelfTest{
                     }
                     Log.info("[selftest] built @/@ planned blocks (queue left: @)", done, planned, player.unit().plans().size);
                     Log.info(done == planned ? "[selftest] PASS" : "[selftest] FAIL: not everything was built");
+                    if(recDir != null) Log.info("[selftest] footage: @ frames", recFrame);
                     phase = 0;
                     Core.app.exit();
                 }
@@ -204,6 +243,7 @@ public class ClientSelfTest{
     }
 
     void pickDefensePorts(){
+        rec = true;
         mod.startPicking();
         for(int i = 0; i < 6 && mod.phase == AutoBuildMod.State.pick; i++) mod.autoKind();
         phase = 10;
@@ -234,7 +274,8 @@ public class ClientSelfTest{
                         if(!sawReplay){ fail("no gray replay"); return; }
                         shot = "defense"; previewShotAt = timer;
                     }
-                    if(timer - previewShotAt < 0.5f) return;
+                    if(timer - previewShotAt < (recDir != null ? 3f : 0.5f)) return;
+                    rec = false;
                     mod.anotherPlan();
                     phase = 11;
                 }else if(mod.phase == AutoBuildMod.State.idle){ fail("defense planning failed"); return; }
@@ -250,6 +291,7 @@ public class ClientSelfTest{
                     planned = mod.current().plans.size;
                     builtPlans = mod.current().plans;
                     mod.commit();
+                    rec = true;
                     phase = 12;
                     timer = 0f;
                 }else if(mod.phase == AutoBuildMod.State.idle){ fail("another plan failed"); return; }
@@ -269,12 +311,40 @@ public class ClientSelfTest{
                 break;
             case 13:
                 keepNearRegion();
-                if(timer > 1f){ Log.info("[selftest] PASS"); phase = 0; Core.app.exit(); }
+                if(timer > 1f){
+                    Log.info("[selftest] PASS");
+                    if(recDir == null){ phase = 0; Core.app.exit(); break; }
+                    // footage: enemy waves against the defense
+                    rec = false;
+                    for(int i = 0; i < 6; i++) logic.runWave();
+                    fastForward = true;
+                    phase = 14;
+                    timer = 0f;
+                }
+                break;
+            case 14:
+                keepNearRegion();
+                if(player.unit() != null) player.unit().shield = 1e7f;
+                DefenseJob dj = mod.defenseJob;
+                float cx = (dj.ax + dj.bx) / 2f * tilesize, cy = (dj.ay + dj.by) / 2f * tilesize;
+                boolean near = false;
+                for(var u : state.rules.waveTeam.data().units) if(u.within(cx, cy, 45 * tilesize)) near = true;
+                if(fastForward && (near || timer > 400f)){ fastForward = false; rec = true; battleStart = timer; Log.info("[selftest] battle footage from @s", timer); }
+                if(!fastForward && (state.rules.waveTeam.data().units.isEmpty() || timer - battleStart > 50f)){
+                    Log.info("[selftest] footage: @ frames", recFrame);
+                    phase = 0;
+                    Core.app.exit();
+                }
                 break;
         }
     }
 
     Seq<BuildPlan> builtPlans;
+    /** footage recording (-Dautobuild.record=dir): frames saved while rec */
+    String recDir;
+    boolean rec, fastForward;
+    int recFrame;
+    float battleStart = -1f, holdFrom = -1f;
     float previewSeenAt = -1f;
 
     void keepNearRegion(){

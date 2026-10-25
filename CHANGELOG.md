@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); version
 change behaviour or settings).
 
 ## [Unreleased]
+### Added
+- README in English and Simplified Chinese (features, core algorithms, tests, build), with GIFs
+  from in-game footage; license: PolyForm Noncommercial 1.0.0.
+- Client self-test: `-Dautobuild.record=<dir>` records frames at a fixed time step (footage).
+### Changed
+- `deploy.sh` finds the Windows mods folder itself (or `MINDUSTRY_WIN_MODS`).
 
 ## [1.3.5] - 2026-10-19
 ### Fixed
