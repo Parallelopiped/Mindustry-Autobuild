@@ -14,7 +14,9 @@ sourceSets.main{
 val mindustryVersion = "v160.7"
 val isWindows = System.getProperty("os.name").lowercase().contains("windows")
 val sdkRoot: String? = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
-val projectName = project.name
+// Hardcoded to the mod's declared name (mod.hjson) so the produced JARs
+// match run.sh / deploy.sh expectations, regardless of the project directory name.
+val projectName = "autobuild"
 
 repositories{
     mavenCentral()
