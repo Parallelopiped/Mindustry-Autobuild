@@ -60,11 +60,21 @@ public class DrillFieldJob extends BuildJob{
         () -> Tr.t("drill.outEdge"), () -> Tr.t("drill.outIn"), BuildJob::itemSinkError).anywhereOrNear();
     public final PortKind waterKind = new PortKind(() -> Tr.t("drill.water"), () -> Tr.t("drill.waters"), Pal.water, true,
         () -> Tr.t("drill.waterEdge"), () -> Tr.t("drill.waterIn"), BuildJob::liquidSourceError).anywhereOrNear();
-    public final Seq<Port> outs = outKind.picks, waters = waterKind.picks;
+    public Seq<Port> outs = outKind.picks, waters = waterKind.picks;
 
     volatile DrillLayoutPlanner current;
     /** price logistics as in this mode while planning (null = the chosen mode) */
     Mode logisticsMode;
+
+    @Override
+    public DrillFieldJob copyForSearch(){
+        DrillFieldJob copy = (DrillFieldJob)super.copyForSearch();
+        copy.outs = new Seq<>(outs);
+        copy.waters = new Seq<>(waters);
+        copy.current = null;
+        copy.logisticsMode = null;
+        return copy;
+    }
 
     @Override
     public String name(){ return Tr.t("drill.name"); }
@@ -612,10 +622,10 @@ public class DrillFieldJob extends BuildJob{
         }
 
         DrillLayoutPlanner planner = c.planner = current = new DrillLayoutPlanner(p);
-        if(cancelled) throw new CancelledException();
+        if(cancelled || Thread.currentThread().isInterrupted()) throw new CancelledException();
         if(progress != null){
             planner.listener = (st, snap) -> progress.frame(Tr.or("dir." + c.outDir, dirNames[c.outDir]) + " #" + c.variant + ": " + Tr.stage(st), c.toPlans(snap));
-            planner.snapshotInterval = 4;
+            planner.snapshotInterval = 50;
         }
         long time = Time.millis();
         boolean ok = planner.plan();

@@ -330,7 +330,7 @@ public class RemotePorts{
             sides = ok;
         }
         Seq<Port> out = new Seq<>();
-        for(int si = 0; si < 4 && out.size < lines; si++){
+        for(int si = 0; si < sides.length && out.size < lines; si++){
             int side = sides[si];
             // the far side only when nothing nearer connects (lines would wrap around the field)
             if(si > 0 && beyond[side] < -Math.max(bx - ax, by - ay) / 2f && !out.isEmpty()) break;

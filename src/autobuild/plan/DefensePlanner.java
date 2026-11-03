@@ -146,6 +146,8 @@ public class DefensePlanner{
         public volatile boolean cancelled;
         public Listener listener;
         public int snapshotInterval = 1;
+        public long snapshotMillis;
+        long lastSnapshot;
         int count;
     }
 
@@ -262,12 +264,16 @@ public class DefensePlanner{
     boolean inRegion(int u, int v){ return u >= p.rx0 && v >= p.ry0 && u < p.rx0 + p.rw && v < p.ry0 + p.rh; }
 
     void checkCancel(){
-        if(ctl.cancelled) throw new CancelledException();
+        if(ctl.cancelled || Thread.currentThread().isInterrupted()) throw new CancelledException();
     }
 
     void snapshot(String stage, boolean force){
+        checkCancel();
         if(ctl.listener == null) return;
         if(!force && (ctl.count++ % ctl.snapshotInterval) != 0) return;
+        long now = System.nanoTime();
+        if(!force && now - ctl.lastSnapshot < ctl.snapshotMillis * 1000000L) return;
+        ctl.lastSnapshot = now;
         ctl.listener.snapshot(stage, currentPlaces());
     }
 

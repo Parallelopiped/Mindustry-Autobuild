@@ -61,6 +61,7 @@ public class EnemyRoutes{
 
     /** Builds the flow field toward the targets (Dijkstra; the game's label-correcting search gives the same weights). */
     public void flow(int[] targets){
+        GridRouter.checkInterrupted();
         int n = w * h;
         weight = new long[n];
         Arrays.fill(weight, Long.MAX_VALUE);
@@ -71,6 +72,7 @@ public class EnemyRoutes{
             q.add(t);
         }
         while(q.size > 0){
+            GridRouter.checkInterrupted();
             long e = q.poll();
             long dist = e >>> 22;
             int i = (int)(e & ((1 << 22) - 1));

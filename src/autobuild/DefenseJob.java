@@ -49,7 +49,7 @@ import static mindustry.Vars.*;
  */
 public class DefenseJob extends BuildJob{
     // ---- settings ----
-    public final Seq<Turret> turrets = new Seq<>();
+    public Seq<Turret> turrets = new Seq<>();
     public final Seq<Item> ammo = new Seq<>();
     public Liquid liquid;
     /** feed the liquid to turrets as coolant where it pays */
@@ -78,6 +78,14 @@ public class DefenseJob extends BuildJob{
     volatile DefensePlanner.Ctl current;
 
     boolean initialized;
+
+    @Override
+    public DefenseJob copyForSearch(){
+        DefenseJob copy = (DefenseJob)super.copyForSearch();
+        copy.turrets = new Seq<>(turrets);
+        copy.current = null;
+        return copy;
+    }
 
     /** defaults, once content is loaded (the mod is constructed before it) */
     void defaults(){
@@ -736,10 +744,11 @@ public class DefenseJob extends BuildJob{
         p.seed = variant * 7919L;
         Result r = new Result(sn);
         DefensePlanner.Ctl ctl = current = new DefensePlanner.Ctl();
-        if(cancelled) throw new CancelledException();
+        if(cancelled || Thread.currentThread().isInterrupted()) throw new CancelledException();
         if(progress != null){
             ctl.listener = (st, places) -> progress.frame("#" + variant + ": " + Tr.stage(st), r.toPlans(places));
             ctl.snapshotInterval = 2;
+            ctl.snapshotMillis = 50;
         }
         long time = Time.millis();
         DefensePlanner pl = r.planner = DefensePlanner.planBest(p, ctl);

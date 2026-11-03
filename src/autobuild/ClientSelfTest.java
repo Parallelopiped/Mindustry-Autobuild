@@ -137,9 +137,9 @@ public class ClientSelfTest{
                 if(mod.phase == AutoBuildMod.State.preview){
                     if(mod.variants.size != 1){ fail("expected 1 plan, got " + mod.variants.size); return; }
                     DrillFieldJob.Candidate c = (DrillFieldJob.Candidate)mod.current();
-                    if(previewShotAt < 0) Log.info("[selftest] plan 1: @ keyframes, replay seen: @; @ | @ | score @", mod.frames.size, sawReplay,
+                    if(previewShotAt < 0) Log.info("[selftest] plan 1: @ keyframes, replay seen: @; @ | @ | score @", mod.replayFrameCount, sawReplay,
                         Strings.stripColors(c.summary()).replace('\n', ' '), c.portText(), Strings.autoFixed((float)c.score(), 1));
-                    if(!sawReplay || mod.frames.size < 2){ fail("no gray replay"); return; }
+                    if(!sawReplay || mod.replayFrameCount < 2){ fail("no gray replay"); return; }
                     if(previewShotAt < 0){ shot = "preview"; previewShotAt = timer; }
                     if(timer - previewShotAt < (recDir != null ? 2.5f : 0.5f)) return; // let the screenshot happen first
                     rec = false;
