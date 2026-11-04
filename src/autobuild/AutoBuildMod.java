@@ -20,6 +20,10 @@ import mindustry.mod.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
 
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.*;
+
 import static mindustry.Vars.*;
 
 /**
@@ -61,7 +65,17 @@ public class AutoBuildMod extends Mod{
     volatile String stage = "";
     float playTime;
     int playIndex;
-    int planToken;
+    volatile int planToken;
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>(), r -> {
+            Thread t = new Thread(r, "autobuild-planner");
+            t.setDaemon(true);
+            return t;
+        });
+    Future<?> worker;
+    BuildJob runningJob;
+    int framePlans, replayFrameCount;
+    static final int MAX_FRAMES = 120, MAX_FRAME_PLANS = 50000, MAX_VARIANTS = 12;
 
     // results
     final Seq<PlanResult> variants = new Seq<>();
@@ -70,6 +84,7 @@ public class AutoBuildMod extends Mod{
     public AutoBuildMod(){
         Events.on(ClientLoadEvent.class, e -> buildHud());
         Events.on(WorldLoadEvent.class, e -> reset());
+        Events.on(ResetEvent.class, e -> reset());
         Events.run(Trigger.update, this::update);
         Events.run(Trigger.draw, this::draw);
 
@@ -86,11 +101,12 @@ public class AutoBuildMod extends Mod{
     Seq<Port> picks(){ return pickKind().picks; }
 
     void reset(){
-        job.cancel();
+        stopWorker();
         phase = State.idle;
         dragging = false;
         variants.clear();
-        latest = null;
+        snapshot = null;
+        replayFrameCount = 0;
     }
 
     // ---------------------------------------------------------------- HUD
@@ -123,7 +139,7 @@ public class AutoBuildMod extends Mod{
             t.bottom().marginBottom(120f);
             t.table(Styles.black6, b -> {
                 b.label(() -> (phase == State.planning ? Tr.t("planning") : Tr.t("replay")) + stage).padLeft(10f).padRight(10f).minWidth(300f);
-                b.button(Tr.t("btn.skip"), Icon.right, () -> { if(phase == State.playback) phase = State.preview; }).size(110f, 44f).visible(() -> phase == State.playback);
+                b.button(Tr.t("btn.skip"), Icon.right, () -> { if(phase == State.playback){ phase = State.preview; clearFrames(); } }).size(110f, 44f).visible(() -> phase == State.playback);
                 b.button(Tr.t("btn.cancel"), Icon.cancel, this::cancelPlanning).size(110f, 44f);
             }).visible(() -> phase == State.planning || phase == State.playback);
         });
@@ -211,7 +227,7 @@ public class AutoBuildMod extends Mod{
                 // at most ~2.5 s however many keyframes were recorded
                 float fps = Math.max(20f, frames.size / 2.5f);
                 playIndex = (int)(playTime * fps);
-                if(playIndex >= frames.size){ phase = State.preview; break; }
+                if(playIndex >= frames.size){ phase = State.preview; clearFrames(); break; }
                 stage = frames.get(playIndex).stage;
                 break;
             default:
@@ -337,7 +353,13 @@ public class AutoBuildMod extends Mod{
 
     /** fresh: new search (best of a few variants); otherwise "another plan" (next variant, kept with the others) */
     void startPlanning(boolean fresh){
-        snapshot = job.prepare();
+        stopWorker();
+        try{
+            snapshot = job.prepare();
+        }catch(RuntimeException e){
+            planningFailed(planToken, e);
+            return;
+        }
         if(snapshot == null){
             ui.showInfoToast(Tr.t("err", job.error), 4f);
             phase = variants.isEmpty() ? State.idle : State.preview;
@@ -345,70 +367,101 @@ public class AutoBuildMod extends Mod{
         }
         if(fresh){ variants.clear(); nextVariant = 0; }
         int base = nextVariant, count = fresh ? 3 : 1;
+        // Workers receive immutable signatures, never the live variants list.
         nextVariant += count;
+        Set<Set<String>> signatures = new HashSet<>();
+        for(PlanResult v : variants) signatures.add(new HashSet<>(v.signature));
         Object sn = snapshot;
-        BuildJob j = job;
+        BuildJob j = runningJob = job.copyForSearch();
         int token = ++planToken;
-        synchronized(frames){ frames.clear(); }
-        latest = null;
+        final boolean record = animate();
         stage = Tr.stage("snapshot");
         phase = State.planning;
 
         BuildJob.Progress progress = (st, plans) -> {
             Frame f = new Frame(plans, st);
-            latest = f;
-            stage = f.stage;
             synchronized(frames){
-                frames.add(f);
-                // keep the replay bounded: drop every other frame when it gets long
-                if(frames.size > 300){
-                    Seq<Frame> keep = new Seq<>();
-                    for(int i = 0; i < frames.size; i += 2) keep.add(frames.get(i));
-                    frames.set(keep);
+                if(token != planToken || Thread.currentThread().isInterrupted()) throw new CancelledException();
+                latest = f;
+                stage = f.stage;
+                if(record && plans.size <= MAX_FRAME_PLANS){
+                    frames.add(f);
+                    framePlans += plans.size;
+                    while(frames.size > MAX_FRAMES || framePlans > MAX_FRAME_PLANS)
+                        framePlans -= frames.remove(0).plans.size;
                 }
             }
         };
-        Thread worker = new Thread(() -> {
+        worker = executor.submit(() -> {
             try{
+                int next = base + count;
                 PlanResult best = j.search(sn, base, count, progress);
                 // "another plan" should actually look different
-                for(int tries = 0; !fresh && best != null && best.ok() && tries < 4 && duplicate(best); tries++){
-                    int v = nextVariant++;
+                for(int tries = 0; !fresh && best != null && best.ok() && tries < 4 && signatures.contains(best.signature); tries++){
+                    if(Thread.currentThread().isInterrupted()) throw new CancelledException();
+                    int v = next++;
                     best = j.search(sn, v, 1, progress);
                 }
                 PlanResult result = best;
-                Core.app.post(() -> finished(token, result));
+                int nextAfterSearch = next;
+                Core.app.post(() -> {
+                    if(token != planToken) return;
+                    nextVariant = nextAfterSearch;
+                    finished(token, result);
+                });
             }catch(CancelledException e){
                 // reset() already moved on
             }catch(Throwable e){
-                Log.err("[autobuild] planner crashed", e);
-                Core.app.post(() -> {
-                    if(token != planToken) return;
-                    phase = variants.isEmpty() ? State.idle : State.preview;
-                    ui.showInfoToast(Tr.t("crashed", e), 5f);
-                });
+                Core.app.post(() -> planningFailed(token, e));
             }
-        }, "autobuild-planner");
-        worker.setDaemon(true);
-        worker.start();
+        });
     }
 
-    boolean duplicate(PlanResult c){
-        for(PlanResult o : variants) if(o.signature.equals(c.signature)) return true;
-        return false;
+    void planningFailed(int token, Throwable e){
+        if(token != planToken) return;
+        Log.err("[autobuild] planning failed", e);
+        clearFrames();
+        snapshot = null;
+        runningJob = null;
+        worker = null;
+        phase = variants.isEmpty() ? State.idle : State.preview;
+        ui.showInfoToast(Tr.t("crashed", e), 5f);
+    }
+
+    void clearFrames(){
+        synchronized(frames){ frames.clear(); framePlans = 0; latest = null; }
+    }
+
+    void stopWorker(){
+        synchronized(frames){
+            planToken++;
+            clearFrames();
+        }
+        if(runningJob != null) runningJob.cancel();
+        if(worker != null) worker.cancel(true);
+        executor.purge();
+        worker = null;
+        runningJob = null;
     }
 
     void finished(int token, PlanResult result){
         if(token != planToken || phase != State.planning) return;
+        runningJob = null;
+        worker = null;
+        snapshot = null;
         if(result == null || !result.ok()){
+            clearFrames();
             ui.showInfoToast(Tr.t("failed", result == null ? Tr.t("nothing") : result.error), 4f);
             phase = variants.isEmpty() ? State.idle : State.preview;
             return;
         }
+        if(variants.size >= MAX_VARIANTS) variants.remove(0);
         variants.add(result);
         shown = variants.size - 1;
         playTime = 0f; playIndex = 0;
+        replayFrameCount = frames.size;
         phase = animate() && frames.size > 1 ? State.playback : State.preview;
+        if(phase == State.preview) clearFrames();
     }
 
     void anotherPlan(){
@@ -416,15 +469,15 @@ public class AutoBuildMod extends Mod{
     }
 
     void cancelPlanning(){
-        job.cancel();
-        planToken++;
+        stopWorker();
+        snapshot = null;
         phase = variants.isEmpty() ? State.idle : State.preview;
     }
 
     void commit(){
         PlanResult c = current();
         if(c == null) return;
-        if(player.unit() == null || !player.unit().canBuild()){
+        if(player == null || player.unit() == null || !player.unit().canBuild()){
             ui.showInfoToast(Tr.t("cantBuild"), 3f);
             return;
         }

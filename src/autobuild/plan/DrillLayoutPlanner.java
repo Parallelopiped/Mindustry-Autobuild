@@ -723,7 +723,7 @@ public class DrillLayoutPlanner{
     boolean wet(int[] d){ return d.length > 2 && d[2] == 1; }
 
     void checkCancel(){
-        if(cancelled || (parent != null && parent.cancelled)) throw new CancelledException();
+        if(cancelled || Thread.currentThread().isInterrupted() || (parent != null && parent.cancelled)) throw new CancelledException();
     }
 
     void snapshot(String stage, boolean force){
@@ -1417,6 +1417,7 @@ public class DrillLayoutPlanner{
             }
         }
         while(!open.isEmpty()){
+            checkCancel();
             float[] cur = open.poll();
             int id = (int)cur[1];
             if(id >= N){
@@ -1579,6 +1580,9 @@ public class DrillLayoutPlanner{
     }
 
     class Lattice{
+        // Deterministic work limits: dense mixed-tier windows otherwise have exponential cost.
+        static final int MAX_WINDOW_NODES = 20000, MAX_IMPROVE_NODES = 500000, MAX_LOCAL_CANDIDATES = 256;
+        int windowNodes, improveNodes;
         final int dx, dy;
         /** chain id at bridge tiles, -1 elsewhere */
         final int[][] chain = new int[W][H];
@@ -1737,15 +1741,17 @@ public class DrillLayoutPlanner{
         }
 
         /**
-         * Large-neighbourhood search: clear a random window, re-pack it exactly (DFS with bound),
-         * keep the result if it is not worse. Mutates sel.
+         * Large-neighbourhood search: clear a random window, re-pack with bounded DFS,
+         * keep the best result found only if it is not worse. Mutates sel.
          */
         void improve(boolean[] sel, int iterations){
+            improveNodes = 0;
             int K = 3 * s; // window side
             if(W - 1 < K || H < K) return;
             boolean[][] used = new boolean[W][H];
             for(int i = 0; i < sel.length; i++) if(sel[i]) set(used, cands.get(i), true);
             for(int it = 0; it < iterations; it++){
+                if(improveNodes >= MAX_IMPROVE_NODES) break;
                 if((it & 31) == 0) checkCancel();
                 int wu = rand.nextInt(W - K), wv = rand.nextInt(H - K + 1);
                 // remove selected drills fully inside the window
@@ -1760,11 +1766,15 @@ public class DrillLayoutPlanner{
                     int[] c = cands.get(i);
                     if(inside(c, wu, wv, K) && !overlaps(used, c)) local.add(i);
                 }
-                List<Integer> best = new ArrayList<>();
-                double[] bestVal = {-1};
+                // Seed with the removed selection, so an exhausted budget cannot lose drills.
+                List<Integer> best = new ArrayList<>(out);
+                double[] bestVal = {removed};
                 double[] suffix = new double[local.size() + 1];
                 for(int i = local.size() - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + values.get(local.get(i));
-                dfs(local, 0, used, new ArrayList<>(), 0, best, bestVal, suffix);
+                windowNodes = 0;
+                // Large modded drill sizes can otherwise exhaust the Java stack as well.
+                if(local.size() <= MAX_LOCAL_CANDIDATES)
+                    dfs(local, 0, used, new ArrayList<>(), 0, best, bestVal, suffix);
                 if(bestVal[0] >= removed){
                     for(int i : best){ sel[i] = true; set(used, cands.get(i), true); }
                 }else{
@@ -1779,6 +1789,10 @@ public class DrillLayoutPlanner{
         }
 
         void dfs(List<Integer> local, int i, boolean[][] used, List<Integer> cur, double val, List<Integer> best, double[] bestVal, double[] suffix){
+            if((windowNodes & 255) == 0) checkCancel();
+            if(windowNodes >= MAX_WINDOW_NODES || improveNodes >= MAX_IMPROVE_NODES) return;
+            windowNodes++;
+            improveNodes++;
             if(val > bestVal[0]){ bestVal[0] = val; best.clear(); best.addAll(cur); }
             if(i >= local.size() || val + suffix[i] <= bestVal[0]) return;
             int idx = local.get(i);
@@ -1982,6 +1996,7 @@ public class DrillLayoutPlanner{
         int range = p.bridges ? p.bridgeRange : 0;
 
         while(!open.isEmpty()){
+            checkCancel();
             float[] cur = open.poll();
             int id = (int)cur[1];
             int L = id & 1, d = (id >> 1) & 3, t = id >> 3, u = t / H, v = t % H;

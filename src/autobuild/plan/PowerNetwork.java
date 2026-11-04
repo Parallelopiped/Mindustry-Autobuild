@@ -166,6 +166,7 @@ public class PowerNetwork{
             int hit = -1;
             outer:
             while(!q.isEmpty()){
+                host.checkCancel();
                 int[] cur = q.poll();
                 int id = cur[1], u = id / H, v = id % H;
                 if(cur[0] > cost[id]) continue;

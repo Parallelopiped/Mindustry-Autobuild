@@ -5,6 +5,9 @@ plugins{
 sourceSets.main{
     java.setSrcDirs(listOf("src"))
 }
+sourceSets.test{
+    java.setSrcDirs(listOf("test"))
+}
 
 // Mindustry version to depend on.
 // Valid values:
@@ -52,7 +55,36 @@ java{
 }
 
 dependencies{
-    compileOnly(if(mindustryVersion == "be") "Anuken:MindustryBuilds:latest" else "Anuken:Mindustry:$mindustryVersion")
+    // Optional offline override, e.g. -PmindustryJar=/path/to/v160.7/dependencies.jar.
+    val localJar = providers.gradleProperty("mindustryJar").orNull
+    if(localJar != null) compileOnly(files(localJar))
+    else compileOnly(if(mindustryVersion == "be") "Anuken:MindustryBuilds:latest" else "Anuken:Mindustry:$mindustryVersion")
+    testImplementation(files(configurations.compileClasspath))
+}
+
+tasks.withType<JavaCompile>().configureEach{
+    options.release.set(17)
+    options.encoding = "UTF-8"
+}
+
+val regressionTests = listOf("autobuild.RemotePortsTest", "autobuild.PlanningLifecycleTest", "autobuild.plan.GridRouterTest", "autobuild.plan.LatticeSearchTest")
+val plannerTests = listOf("autobuild.PlannerTest", "autobuild.DefenseTest")
+// These suites have main methods and explicit assertions, not JUnit annotations.
+tasks.test { enabled = false }
+(regressionTests + plannerTests).forEach { entry ->
+    val taskName = entry.substringAfterLast('.').replaceFirstChar { it.lowercase() }
+    val testTask = tasks.register<JavaExec>(taskName){
+        group = "verification"
+        dependsOn(tasks.testClasses)
+        classpath = sourceSets.test.get().runtimeClasspath
+        mainClass.set(entry)
+        maxHeapSize = "1g"
+    }
+    tasks.check { dependsOn(testTask) }
+}
+tasks.register("regressionTest"){
+    group = "verification"
+    dependsOn(regressionTests.map { it.substringAfterLast('.').replaceFirstChar { c -> c.lowercase() } })
 }
 
 tasks.jar{

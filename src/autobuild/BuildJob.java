@@ -30,7 +30,7 @@ import static mindustry.Vars.*;
  * Also holds the geometry of ports and the rules shared by every job about the player's existing
  * buildings (never plan over them, never mix items with their networks).
  */
-public abstract class BuildJob{
+public abstract class BuildJob implements Cloneable{
     /** region, world tiles, inclusive */
     public int ax, ay, bx, by;
     public Team team = Team.sharded;
@@ -64,6 +64,18 @@ public abstract class BuildJob{
 
     public void cancel(){
         cancelled = true;
+    }
+
+    /** Capture settings for one search. Port-kind identities are retained for result/UI lookup.
+     * Subclasses must copy mutable settings read by search; world snapshotting stays on the main thread. */
+    public BuildJob copyForSearch(){
+        try{
+            BuildJob copy = (BuildJob)super.clone();
+            copy.cancelled = false;
+            return copy;
+        }catch(CloneNotSupportedException e){
+            throw new AssertionError(e);
+        }
     }
 
     /** a new region was selected */

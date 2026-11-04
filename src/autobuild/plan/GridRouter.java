@@ -70,7 +70,8 @@ public class GridRouter{
 
     double[] cost;
     int[] prev;
-    Start[] startOf;
+    final Map<Integer, Start> startOf = new HashMap<>();
+    final StateHeap queue = new StateHeap();
 
     public GridRouter(int W, int H, Grid grid){
         this.W = W; this.H = H; this.grid = grid;
@@ -81,15 +82,22 @@ public class GridRouter{
     int id(int u, int v, int m){ return (u * H + v) * M + m; }
 
     void search(List<Start> starts, int tu, int tv, int ts, Set<Integer> banned, int[] hit){
-        int n = W * H * M;
-        cost = new double[n];
-        prev = new int[n];
-        startOf = new Start[W * H];
+        checkInterrupted();
+        int n = Math.multiplyExact(Math.multiplyExact(W, H), M);
+        if(cost == null || cost.length != n){
+            cost = new double[n];
+            prev = new int[n];
+        }
+        startOf.clear();
+        // Routing retries ban only a few tiles. Avoid boxing a tile ID for every explored edge.
+        boolean[] forbidden = banned.isEmpty() ? null : new boolean[W * H];
+        for(int tile : banned) forbidden[tile] = true;
         Arrays.fill(cost, Double.MAX_VALUE);
         Arrays.fill(prev, -1);
-        PriorityQueue<double[]> q = new PriorityQueue<>(Comparator.comparingDouble(a -> a[0]));
+        StateHeap q = queue;
+        q.clear();
         for(Start s : starts){
-            if(!in(s.u, s.v) || banned.contains(s.u * H + s.v)) continue;
+            if(!in(s.u, s.v) || (forbidden != null && forbidden[s.u * H + s.v])) continue;
             double c = grid.tileCost(s.u, s.v);
             if(c < 0) continue;
             if(s.source && !grid.pushOk(s.u, s.v)) continue;
@@ -98,18 +106,19 @@ public class GridRouter{
             double total = c + s.cost;
             if(total < cost[i]){
                 cost[i] = total;
-                startOf[s.u * H + s.v] = s;
-                q.add(new double[]{total + h(s.u, s.v, tu, tv, ts), i});
+                startOf.put(i, s);
+                q.add(total + h(s.u, s.v, tu, tv, ts), i);
             }
         }
         while(!q.isEmpty()){
-            double[] cur = q.poll();
-            int i = (int)cur[1];
+            checkInterrupted();
+            double priority = q.priority();
+            int i = q.poll();
             int m = i % M, t = i / M, u = t / H, v = t % H;
             // A*: the entry's estimate is its cost so far plus the distance estimate; a stale entry has a larger one
             double g = cost[i];
-            if(cur[0] > g + h(u, v, tu, tv, ts) + 1e-9) continue;
-            Start st = prev[i] < 0 ? startOf[t] : null;
+            if(priority > g + h(u, v, tu, tv, ts) + 1e-9) continue;
+            Start st = prev[i] < 0 ? startOf.get(i) : null;
             boolean source = st != null && st.source;
             int a = m < 4 ? m : m < 8 ? m - 4 : -1;
             int back = a < 0 ? -1 : (a + 2) % 4;
@@ -128,12 +137,12 @@ public class GridRouter{
                 if(d == back) continue;
                 // walk
                 int nu = u + DX[d], nv = v + DY[d];
-                if(outOk && in(nu, nv) && !banned.contains(nu * H + nv)){
+                if(outOk && in(nu, nv) && (forbidden == null || !forbidden[nu * H + nv])){
                     double c = grid.tileCost(nu, nv);
                     if(c >= 0){
                         double nc = g + c + (a >= 0 && d != a && !landed ? turnCost : 0);
                         int ni = id(nu, nv, d);
-                        if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(new double[]{nc + h(nu, nv, tu, tv, ts), ni}); }
+                        if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(nc + h(nu, nv, tu, tv, ts), ni); }
                     }
                 }
                 // bridge jump (not from the source block)
@@ -141,15 +150,19 @@ public class GridRouter{
                 for(int k = 2; k <= bridgeRange; k++){
                     int lu = u + DX[d] * k, lv = v + DY[d] * k;
                     if(!in(lu, lv)) break;
-                    if(banned.contains(lu * H + lv)) continue;
+                    if(forbidden != null && forbidden[lu * H + lv]) continue;
                     double c = grid.tileCost(lu, lv);
                     if(c < 0) continue;
                     double nc = g + c + bridgeCost;
                     int ni = id(lu, lv, 4 + d);
-                    if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(new double[]{nc + h(lu, lv, tu, tv, ts), ni}); }
+                    if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(nc + h(lu, lv, tu, tv, ts), ni); }
                 }
             }
         }
+    }
+
+    static void checkInterrupted(){
+        if(Thread.currentThread().isInterrupted()) throw new DrillLayoutPlanner.CancelledException();
     }
 
     /**
@@ -194,6 +207,8 @@ public class GridRouter{
      * Routes that cross themselves are searched again without the crossing tile.
      */
     public List<Step> route(List<Start> starts, int tu, int tv, int ts){
+        lastStart = null;
+        lastCost = Double.MAX_VALUE;
         Set<Integer> banned = new HashSet<>();
         for(int attempt = 0; attempt < 6; attempt++){
             int[] hit = {-1, -1};
@@ -215,7 +230,7 @@ public class GridRouter{
         for(int i = end; i >= 0; i = prev[i]) states.addFirst(new int[]{i});
         List<Step> out = new ArrayList<>();
         int[][] st = states.toArray(new int[0][]);
-        lastStart = startOf[st[0][0] / M];
+        lastStart = startOf.get(st[0][0]);
         for(int k = 0; k < st.length; k++){
             int i = st[k][0], m = i % M, t = i / M, u = t / H, v = t % H;
             boolean landed = m >= 4 && m < 8;
