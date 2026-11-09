@@ -26,3 +26,4 @@ jobs:
         archive: false
         name: mindustry-autobuildDesktop
         path: build/libs/mindustry-autobuildDesktop.jar
+        if-no-files-found: error
