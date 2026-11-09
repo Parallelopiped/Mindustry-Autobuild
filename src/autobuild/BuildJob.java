@@ -200,7 +200,11 @@ public abstract class BuildJob implements Cloneable{
      */
     public static boolean empty(int x, int y){
         Tile t = world.tile(x, y);
-        return t != null && t.build == null && t.block() == Blocks.air;
+        if(t == null || t.build != null) return false;
+        Block b = t.block();
+        // boulders (Prop: breakable, always replaced by whatever is built there) count as empty;
+        // static walls are Props too, but solid and neither breakable nor replaceable
+        return b == Blocks.air || b.alwaysReplace && b.breakable && !b.solid;
     }
 
     public static boolean footprintEmpty(int x, int y, int size){

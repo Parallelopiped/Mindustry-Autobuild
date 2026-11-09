@@ -105,7 +105,15 @@ public class RemotePorts{
             }
         }
 
-        if(anyRemote) arc.util.Log.info("[autobuild] line grid @x@ in @ms", r.gw, r.gh, arc.util.Time.timeSinceMillis(t0));
+        if(anyRemote){
+            r.edgeOk = new boolean[r.gw][r.gh];
+            for(int x = job.ax; x <= job.bx; x++) for(int y = job.ay; y <= job.by; y++){
+                if(x != job.ax && x != job.bx && y != job.ay && y != job.by || !r.inGrid(x, y)) continue;
+                Tile t = world.tile(x, y);
+                r.edgeOk[x - r.gx][y - r.gy] = t != null && BuildJob.empty(x, y) && !t.solid() && Build.validPlace(job.belt, job.team, x, y, 0);
+            }
+            arc.util.Log.info("[autobuild] line grid @x@ in @ms", r.gw, r.gh, arc.util.Time.timeSinceMillis(t0));
+        }
         for(int i = 0; i < outs.size; i++){
             Port p = outs.get(i);
             Building b = p.existing;
@@ -294,7 +302,7 @@ public class RemotePorts{
             for(int pos = lo; pos <= hi; pos++){
                 int ex = vertical ? (side == 0 ? bx : ax) : pos, ey = vertical ? pos : (side == 1 ? by : ay);
                 int sx = ex + Geometry.d4x(side), sy = ey + Geometry.d4y(side);
-                if(!freeAt(sx, sy) || !reachable(sx, sy) || nearAvoided(ex, ey, avoid)) continue;
+                if(!freeAt(sx, sy) || !reachable(sx, sy) || nearAvoided(ex, ey, avoid) || !edgeBuildable(ex, ey)) continue;
                 // ties: the spot nearer the target
                 float cost = distance(sx, sy) + 0.01f * (Math.abs(sx - cx0) + Math.abs(sy - cy0));
                 cand.add(new int[]{side, pos, (int)(cost * 100)});
@@ -348,7 +356,7 @@ public class RemotePorts{
                 for(int j = 0; j < taken.size; j++) if(Math.abs(taken.get(j) - pos) < 2) close = true;
                 if(close) continue;
                 int ex = vertical ? (side == 0 ? bx : ax) : pos, ey = vertical ? pos : (side == 1 ? by : ay);
-                if(!freeAt(ex + Geometry.d4x(side), ey + Geometry.d4y(side)) || !reachable(ex + Geometry.d4x(side), ey + Geometry.d4y(side))) continue;
+                if(!freeAt(ex + Geometry.d4x(side), ey + Geometry.d4y(side)) || !reachable(ex + Geometry.d4x(side), ey + Geometry.d4y(side)) || !edgeBuildable(ex, ey)) continue;
                 // not in the corner of an avoided side either (the corner tile belongs to both edges)
                 if(nearAvoided(ex, ey, avoid)) continue;
                 taken.add(pos);
@@ -360,6 +368,18 @@ public class RemotePorts{
             out.add(Port.edge(side, 0.5f));
         }
         return out;
+    }
+
+    /**
+     * Region edge tiles that can hold a port's block: the field's last belt (output) or the water
+     * router (water input); grid flags, filled on the main thread, null = not checked. Only the
+     * tile outside was checked before - a wall on the edge itself left the water network without a
+     * router (no drill got water).
+     */
+    boolean[][] edgeOk;
+
+    boolean edgeBuildable(int x, int y){
+        return edgeOk == null || inGrid(x, y) && edgeOk[x - gx][y - gy];
     }
 
     /** within 2 tiles of an edge in the `avoid` mask */

@@ -177,6 +177,7 @@ public class ClientSelfTest{
                     if(timer - previewShotAt2 < 0.5f) return;
                     planned = c.plans.size;
                     built = c;
+                    Log.info("[selftest] planned blocks over boulders: @", overBoulders(mod.current().plans));
                     mod.commit();
                     rec = true;
                     phase = 4;
@@ -290,6 +291,7 @@ public class ClientSelfTest{
                     built = null;
                     planned = mod.current().plans.size;
                     builtPlans = mod.current().plans;
+                    Log.info("[selftest] planned blocks over boulders: @", overBoulders(mod.current().plans));
                     mod.commit();
                     rec = true;
                     phase = 12;
@@ -346,6 +348,19 @@ public class ClientSelfTest{
     int recFrame;
     float battleStart = -1f, holdFrom = -1f;
     float previewSeenAt = -1f;
+
+    /** plan tiles that hold a boulder now (the unit replaces it when building) */
+    static int overBoulders(Seq<BuildPlan> plans){
+        int n = 0;
+        for(BuildPlan p : plans){
+            int off = (p.block.size - 1) / 2;
+            for(int i = 0; i < p.block.size; i++) for(int j = 0; j < p.block.size; j++){
+                var t = world.tile(p.x - off + i, p.y - off + j);
+                if(t != null && t.build == null && t.block() != Blocks.air) n++;
+            }
+        }
+        return n;
+    }
 
     void keepNearRegion(){
         BuildJob job = mod.job;

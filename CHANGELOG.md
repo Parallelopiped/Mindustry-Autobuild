@@ -7,6 +7,22 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-11-09
+### Fixed
+- Crash (`ArrayIndexOutOfBoundsException` in `RemotePorts.edgePortsFacing`) when a water input away
+  from the region had no reachable edge spot after the output sides were excluded - thanks to
+  @Iroby-Neko (#4).
+- Boulders were treated as obstacles; the game builds over them, so the planners now do too
+  (static walls are still obstacles).
+- Ports away from the region: an edge spot whose own tile can't be built on (e.g. a wall right on
+  the edge) is no longer chosen - the water router could land on it and no drill got water.
+### Changed (#4, @Iroby-Neko)
+- Planning lifecycle: a cancelled / replaced search can no longer overwrite a newer one; one
+  planning thread; the replay and the kept plans are bounded.
+- Faster routing (primitive heap, reused arrays, no boxing in hot loops); the lattice search has a
+  node budget and checks for cancellation.
+- Regression tests run with `./gradlew check`; `test.sh` uses `JAVA_HOME` instead of a fixed path.
+
 ## [1.3.6] - 2026-10-25
 First public release. Mod behaviour as in 1.3.5.
 ### Added
@@ -323,6 +339,7 @@ First public release. Mod behaviour as in 1.3.5.
 - Environment check: region selection (F7 / button), terrain snapshot, conveyor row placement.
 
 [Unreleased]: #
+[1.3.7]: #
 [1.3.6]: #
 [1.3.5]: #
 [1.3.4]: #

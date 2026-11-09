@@ -202,6 +202,13 @@ public class ServerTest{
                     int reach = pt.existing.block.size / 2 + 1;
                     st = world.tile(pt.x + dx * reach, pt.y + dy * reach);
                     if(st != null && (st.build != null || st.solid())) st = null;
+                    // that side is taken (by the plan's own line): any free tile around the block
+                    int s = pt.existing.block.size, off = (s - 1) / 2, x0 = pt.existing.tile.x - off, y0 = pt.existing.tile.y - off;
+                    for(int i = -1; i <= s && st == null; i++) for(int j = -1; j <= s && st == null; j++){
+                        boolean ring = (i == -1 || i == s) != (j == -1 || j == s);
+                        Tile n = ring ? world.tile(x0 + i, y0 + j) : null;
+                        if(n != null && n.build == null && !n.solid()) st = n;
+                    }
                 }else if(pt.edge) st = world.tile(w[0] + Geometry.d4x(pt.side), w[1] + Geometry.d4y(pt.side));
                 else for(int d = 0; d < 4 && st == null; d++){
                     Tile n = world.tile(w[0] + Geometry.d4x(d), w[1] + Geometry.d4y(d));
