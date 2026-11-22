@@ -197,28 +197,40 @@ public class RemotePorts{
     float[][] flood(Seq<int[]> from, int range){
         float[][] dist = new float[gw][gh];
         for(float[] r : dist) Arrays.fill(r, Float.MAX_VALUE);
-        PriorityQueue<long[]> q = new PriorityQueue<>(Comparator.comparingLong(a -> a[0]));
+        // In half-tile cost units a walk costs 2 and a bridge costs 5. All pending
+        // distances lie between the current distance and current + 5, so six buckets
+        // suffice for Dijkstra's frontier. Tiles at the same distance can run in any order.
+        final int walk = 2, bridge = 5;
+        IntSeq[] buckets = new IntSeq[bridge + 1];
+        for(int i = 0; i < buckets.length; i++) buckets[i] = new IntSeq();
+        int queued = 0;
         for(int[] t : from){
             if(!freeAt(t[0], t[1])) continue;
             int u = t[0] - gx, v = t[1] - gy;
-            if(dist[u][v] > 0){ dist[u][v] = 0; q.add(new long[]{0, u * gh + v}); }
+            if(dist[u][v] == 0) continue;
+            dist[u][v] = 0;
+            buckets[0].add(u * gh + v);
+            queued++;
         }
-        // costs in tenths, as integers
-        int step = 10, jump = 25;
-        while(!q.isEmpty()){
-            long[] cur = q.poll();
-            int id = (int)cur[1], u = id / gh, v = id % gh;
-            if(cur[0] > dist[u][v] * 10 + 0.5f) continue;
-            for(int d = 0; d < 4; d++){
-                for(int k = 1; k <= Math.max(1, range); k++){
-                    int nu = u + Geometry.d4x(d) * k, nv = v + Geometry.d4y(d) * k;
-                    if(nu < 0 || nv < 0 || nu >= gw || nv >= gh) break;
-                    if(!free[nu][nv]) continue;
-                    if(k > 1 && range < 2) break;
-                    long nc = cur[0] + (k == 1 ? step : jump);
-                    if(nc < dist[nu][nv] * 10 - 0.5f){
-                        dist[nu][nv] = nc / 10f;
-                        q.add(new long[]{nc, nu * gh + nv});
+        for(int ticks = 0; queued > 0; ticks++){
+            IntSeq current = buckets[ticks % buckets.length];
+            IntSeq nextWalk = buckets[(ticks + walk) % buckets.length];
+            IntSeq nextBridge = buckets[(ticks + bridge) % buckets.length];
+            while(current.size > 0){
+                int id = current.pop(), u = id / gh, v = id % gh;
+                queued--;
+                if(dist[u][v] < ticks * 0.5f) continue; // a shorter path already reached this tile
+                for(int d = 0; d < 4; d++){
+                    for(int k = 1; k <= Math.max(1, range); k++){
+                        int nu = u + Geometry.d4x(d) * k, nv = v + Geometry.d4y(d) * k;
+                        if(nu < 0 || nv < 0 || nu >= gw || nv >= gh) break;
+                        if(!free[nu][nv]) continue; // a bridge can still land beyond this tile
+                        float cost = (ticks + (k == 1 ? walk : bridge)) * 0.5f;
+                        if(cost < dist[nu][nv]){
+                            dist[nu][nv] = cost;
+                            (k == 1 ? nextWalk : nextBridge).add(nu * gh + nv);
+                            queued++;
+                        }
                     }
                 }
             }
