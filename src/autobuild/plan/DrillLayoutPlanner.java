@@ -1536,7 +1536,7 @@ public class DrillLayoutPlanner{
         List<Feeder> bestFeeders = null;
         String bestName = null;
         // stage 1: randomized greedy on every spacing/phase; keep the top few for local search
-        List<Object[]> top = new ArrayList<>(); // {value, lattice, selection}
+        List<Lattice> top = new ArrayList<>(3);
         Set<Integer> dxs = new TreeSet<>(Arrays.asList(Math.min(3, p.bridgeRange), Math.min(4, p.bridgeRange)));
         for(int dx : dxs){
             if(dx < 2) continue;
@@ -1545,16 +1545,20 @@ public class DrillLayoutPlanner{
                     for(int py = 0; py < dy; py++){
                         checkCancel();
                         Lattice lat = new Lattice(dx, dy, px, py);
-                        boolean[] bestSel = null;
-                        double latBest = -1;
                         for(int r = 0; r < 6; r++){
                             boolean[] sel = lat.greedy(r == 0);
                             double val = lat.value(sel);
-                            if(val > latBest){ latBest = val; bestSel = sel; }
+                            if(val > lat.bestValue){ lat.bestValue = val; lat.bestSel = sel; }
                         }
-                        top.add(new Object[]{latBest, lat, bestSel});
-                        if(latBest > bestValue){
-                            bestValue = latBest; bestFeeders = lat.feeders(bestSel); bestName = lat.name();
+                        // Insert after equal scores to preserve phase order when ties reach the cutoff.
+                        int rank = 0;
+                        while(rank < top.size() && top.get(rank).bestValue >= lat.bestValue) rank++;
+                        if(rank < 3){
+                            if(top.size() == 3) top.remove(2);
+                            top.add(rank, lat);
+                        }
+                        if(lat.bestValue > bestValue){
+                            bestValue = lat.bestValue; bestFeeders = lat.feeders(lat.bestSel); bestName = lat.name();
                             feeders = bestFeeders; layout = bestName;
                             snapshot("layout: trying " + bestName, false);
                         }
@@ -1563,10 +1567,8 @@ public class DrillLayoutPlanner{
             }
         }
         // stage 2: large-neighbourhood search on the most promising lattices
-        top.sort((a, b) -> Double.compare((double)b[0], (double)a[0]));
-        for(int i = 0; i < Math.min(3, top.size()); i++){
-            Lattice lat = (Lattice)top.get(i)[1];
-            boolean[] sel = (boolean[])top.get(i)[2];
+        for(Lattice lat : top){
+            boolean[] sel = lat.bestSel;
             lat.improve(sel, 1500);
             double val = lat.value(sel);
             if(val > bestValue){
@@ -1589,9 +1591,14 @@ public class DrillLayoutPlanner{
         /** index of the bridge in its chain */
         final int[][] index = new int[W][H];
         final List<List<int[]>> chains = new ArrayList<>();
-        /** candidate drills: {u, v, chainId, bridgeIndex} (first valid attachment) */
+        /** candidate drills: {u, v, chainId, bridgeIndex, type} (first valid attachment) */
         final List<int[]> cands = new ArrayList<>();
         final List<Double> values = new ArrayList<>();
+        /** Candidates sharing an attachment bridge, linked in their original enumeration order. */
+        final int[][] firstAt;
+        final int[] nextAt;
+        double bestValue = -1;
+        boolean[] bestSel;
 
         Lattice(int dx, int dy, int px, int py){
             this.dx = dx; this.dy = dy;
@@ -1619,6 +1626,17 @@ public class DrillLayoutPlanner{
                         values.add(val);
                     }
                 }
+            }
+            firstAt = new int[chains.size()][];
+            for(int c = 0; c < chains.size(); c++){
+                firstAt[c] = new int[chains.get(c).size()];
+                Arrays.fill(firstAt[c], -1);
+            }
+            nextAt = new int[cands.size()];
+            for(int i = cands.size() - 1; i >= 0; i--){
+                int[] c = cands.get(i);
+                nextAt[i] = firstAt[c[2]][c[3]];
+                firstAt[c[2]][c[3]] = i;
             }
         }
 
@@ -1682,62 +1700,68 @@ public class DrillLayoutPlanner{
         }
 
         double value(boolean[] sel){
-            double v = 0;
-            for(Feeder f : feeders(sel)) v += f.value;
-            return v;
+            return evaluate(sel, null);
         }
 
         List<Feeder> feeders(boolean[] sel){
-            int nc = chains.size();
-            int[] lo = new int[nc], hi = new int[nc];
-            Arrays.fill(lo, Integer.MAX_VALUE); Arrays.fill(hi, -1);
-            List<List<int[]>> drillsOf = new ArrayList<>();
-            double[] val = new double[nc];
-            for(int i = 0; i < nc; i++) drillsOf.add(new ArrayList<>());
-            for(int i = 0; i < sel.length; i++){
-                if(!sel[i]) continue;
-                int[] c = cands.get(i);
-                drillsOf.get(c[2]).add(new int[]{c[0], c[1], 0, c[4]});
-                val[c[2]] += values.get(i);
-                lo[c[2]] = Math.min(lo[c[2]], c[3]);
-                hi[c[2]] = Math.max(hi[c[2]], c[3]);
-            }
             List<Feeder> out = new ArrayList<>();
-            for(int c = 0; c < nc; c++){
-                if(hi[c] < 0) continue;
-                List<int[]> ch = chains.get(c);
-                // drills of this chain by attachment index; a chain that would carry more than one
-                // output line is cut into consecutive sub-chains (they must not share a bridge)
-                List<int[]> ds = new ArrayList<>(); // {drillIndexInCands}
-                for(int i = 0; i < sel.length; i++) if(sel[i] && cands.get(i)[2] == c) ds.add(new int[]{i});
-                ds.sort(Comparator.comparingInt(x -> cands.get(x[0])[3]));
-                int gLo = -1, gHi = -1;
-                double gFlow = 0, gVal = 0;
-                List<int[]> gDrills = new ArrayList<>();
-                for(int j = 0; j <= ds.size(); j++){
-                    int[] cd = j < ds.size() ? cands.get(ds.get(j)[0]) : null;
-                    double df = cd == null ? 0 : flowOf(new int[]{cd[0], cd[1], 0, cd[4]});
-                    boolean cut = cd == null || (gLo >= 0 && capacityOn() && gFlow + df > p.sinkCapacity && cd[3] > gHi + 1);
-                    if(cut && gLo >= 0){
-                        int end = gHi + 1; // one bridge past the last attachment: end bridges don't accept from drills
-                        Feeder f = new Feeder();
-                        f.drills.addAll(gDrills);
-                        for(int i = gLo; i < end; i++) f.bridges.add(ch.get(i));
-                        f.su = ch.get(end)[0]; f.sv = ch.get(end)[1]; f.landed = true;
-                        f.value = gVal - bridgeCost() * (end - gLo + 1);
-                        for(int i = gLo; i <= end; i++) if(otherOre[ch.get(i)[0]][ch.get(i)[1]]) f.value -= oreTileValue();
-                        if(f.value > 0) out.add(f);
-                        gLo = -1; gFlow = 0; gVal = 0; gDrills = new ArrayList<>();
-                    }
-                    if(cd == null) break;
-                    if(gLo < 0) gLo = cd[3];
-                    gHi = Math.max(gHi < 0 || gDrills.isEmpty() ? cd[3] : gHi, cd[3]);
-                    gFlow += df;
-                    gVal += values.get(ds.get(j)[0]);
-                    gDrills.add(new int[]{cd[0], cd[1], 0, cd[4]});
-                }
-            }
+            evaluate(sel, out);
             return out;
+        }
+
+        /** Score the same chain cuts as the final layout, building feeder objects only on request. */
+        double evaluate(boolean[] sel, List<Feeder> out){
+            double total = 0;
+            boolean limited = capacityOn();
+            int[] scoringDrill = new int[4];
+            for(int c = 0; c < chains.size(); c++){
+                List<int[]> chain = chains.get(c);
+                int lo = -1, hi = -1;
+                double flow = 0, value = 0;
+                Feeder feeder = null;
+                for(int bridge = 0; bridge < chain.size(); bridge++){
+                    for(int i = firstAt[c][bridge]; i >= 0; i = nextAt[i]){
+                        if(!sel[i]) continue;
+                        int[] cd = cands.get(i);
+                        int[] drill = out == null ? scoringDrill : new int[4];
+                        drill[0] = cd[0]; drill[1] = cd[1]; drill[3] = cd[4];
+                        double drillFlow = limited ? flowOf(drill) : 0;
+                        // Over-capacity groups may split only if they won't share an end bridge.
+                        if(lo >= 0 && limited && flow + drillFlow > p.sinkCapacity && bridge > hi + 1){
+                            total += finishGroup(chain, lo, hi, value, feeder, out);
+                            lo = -1; flow = 0; value = 0;
+                        }
+                        if(lo < 0){
+                            lo = bridge;
+                            if(out != null) feeder = new Feeder();
+                        }
+                        hi = bridge;
+                        flow += drillFlow;
+                        value += values.get(i);
+                        if(feeder != null) feeder.drills.add(drill);
+                    }
+                }
+                if(lo >= 0) total += finishGroup(chain, lo, hi, value, feeder, out);
+            }
+            return total;
+        }
+
+        double finishGroup(List<int[]> chain, int lo, int hi, double value, Feeder feeder, List<Feeder> out){
+            // The unlinked end bridge must be one past the last drill attachment.
+            int end = hi + 1;
+            value -= bridgeCost() * (end - lo + 1);
+            for(int i = lo; i <= end; i++){
+                int[] tile = chain.get(i);
+                if(otherOre[tile[0]][tile[1]]) value -= oreTileValue();
+            }
+            if(!(value > 0)) return 0;
+            if(feeder != null){
+                for(int i = lo; i < end; i++) feeder.bridges.add(chain.get(i));
+                feeder.su = chain.get(end)[0]; feeder.sv = chain.get(end)[1]; feeder.landed = true;
+                feeder.value = value;
+                out.add(feeder);
+            }
+            return value;
         }
 
         /**

@@ -12,6 +12,7 @@ public class GridRouterTest{
     public static void main(String[] args){
         heap();
         sameTileStarts();
+        bridgeStartPrice();
         randomRoutes();
         cancellation();
         System.out.println("GRID ROUTER OK: heap oracle, start identity, 160 A*/Dijkstra comparisons, cancellation");
@@ -44,6 +45,22 @@ public class GridRouterTest{
         require(path.get(0).kind == GridRouter.PIPE, "wrong source block");
         router.route(Collections.emptyList(), 6, 2, 1);
         require(router.lastStart == null && router.lastCost == Double.MAX_VALUE, "stale failed-route metadata");
+    }
+
+    static void bridgeStartPrice(){
+        GridRouter router = new GridRouter(8, 1, new Grid(){
+            public double tileCost(int u, int v){ return u == 0 || u == 3 || u == 6 || u == 7 ? 1 : -1; }
+            public boolean pushOk(int u, int v){ return true; }
+        });
+        router.bridgeRange = 3;
+        // A first jump places two bridges. A later jump reuses the previous landing
+        // as its source and places one more bridge.
+        router.bridgeCost = 5;
+        router.bridgeStartCost = 5;
+        List<Step> path = router.route(Collections.singletonList(new Start(0, 0, -1, 0, false)), 7, 0, 1);
+        require(path != null && router.lastCost == 18, "bridge source and landing costs");
+        require(path.get(0).kind == GridRouter.BRIDGE && path.get(1).kind == GridRouter.BRIDGE
+            && path.get(2).kind == GridRouter.END, "bridge chain shape");
     }
 
     static void randomRoutes(){

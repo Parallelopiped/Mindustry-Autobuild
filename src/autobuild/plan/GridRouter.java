@@ -67,6 +67,8 @@ public class GridRouter{
     /** bridge range in tiles (0 = no bridges), cost of a jump (on top of the landing tile) */
     public int bridgeRange;
     public double bridgeCost = 1.5, turnCost = 0.1;
+    /** Extra cost to turn a pipe into the first bridge in a chain. A landing is already a bridge. */
+    public double bridgeStartCost;
 
     double[] cost;
     int[] prev;
@@ -153,7 +155,7 @@ public class GridRouter{
                     if(forbidden != null && forbidden[lu * H + lv]) continue;
                     double c = grid.tileCost(lu, lv);
                     if(c < 0) continue;
-                    double nc = g + c + bridgeCost;
+                    double nc = g + c + bridgeCost + (landed ? 0 : bridgeStartCost);
                     int ni = id(lu, lv, 4 + d);
                     if(nc < cost[ni]){ cost[ni] = nc; prev[ni] = i; q.add(nc + h(lu, lv, tu, tv, ts), ni); }
                 }
