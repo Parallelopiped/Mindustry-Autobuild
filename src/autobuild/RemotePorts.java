@@ -7,6 +7,7 @@ import autobuild.plan.GridRouter.*;
 import mindustry.content.*;
 import mindustry.entities.units.*;
 import mindustry.gen.*;
+import mindustry.type.ItemStack;
 import mindustry.world.*;
 import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.liquid.*;
@@ -53,6 +54,8 @@ public class RemotePorts{
     final Seq<int[][]> waterStart = new Seq<>();
     Block belt, bridge, conduit, liquidBridge;
     int bridgeRange, liquidBridgeRange;
+    boolean materialEfficiency;
+    float buildCostMultiplier = 1f;
     int ax, ay, bx, by;
 
     // ---- results ----
@@ -85,6 +88,8 @@ public class RemotePorts{
         r.conduit = job.conduit;
         r.liquidBridge = BuildJob.available(Blocks.bridgeConduit) ? Blocks.bridgeConduit : null;
         r.liquidBridgeRange = r.liquidBridge == null ? 0 : ((ItemBridge)r.liquidBridge).range;
+        r.materialEfficiency = job.mode == DrillLayoutPlanner.Mode.EFFICIENCY;
+        r.buildCostMultiplier = state.rules.buildCostMultiplier;
         // the trunk grid: the region and every remote port, with room around
         // the whole map: a line may have to follow corridors far away from the region and the port
         // (only when a port is away from the region: it is computed on the main thread)
@@ -171,6 +176,7 @@ public class RemotePorts{
         r.gx = gx; r.gy = gy; r.gw = gw; r.gh = gh; r.free = free; r.nearItems = nearItems; r.nearLiquids = nearLiquids;
         r.belt = belt; r.bridge = bridge; r.conduit = conduit; r.liquidBridge = liquidBridge;
         r.bridgeRange = bridgeRange; r.liquidBridgeRange = liquidBridgeRange;
+        r.materialEfficiency = materialEfficiency; r.buildCostMultiplier = buildCostMultiplier;
         r.ax = ax; r.ay = ay; r.bx = bx; r.by = by;
         r.any = any;
         r.outTarget.addAll(outTarget);
@@ -189,36 +195,48 @@ public class RemotePorts{
     boolean inGrid(int x, int y){ return x >= gx && y >= gy && x < gx + gw && y < gy + gh; }
 
     /**
-     * Path cost from these world tiles over free ground, the way the lines are routed (a step costs
-     * 1, a bridge jump over anything 1 + the jump cost): grid values, MAX_VALUE = unreachable.
+     * Distance estimate for choosing field exits, using compact line prices (1 for a step, 2.5
+     * for a bridge jump). The final lines also account for direction, other trunks and build mode.
      */
     float[][] reach;
 
     float[][] flood(Seq<int[]> from, int range){
         float[][] dist = new float[gw][gh];
         for(float[] r : dist) Arrays.fill(r, Float.MAX_VALUE);
-        PriorityQueue<long[]> q = new PriorityQueue<>(Comparator.comparingLong(a -> a[0]));
+        // In half-tile cost units a walk costs 2 and a bridge costs 5. All pending
+        // distances lie between the current distance and current + 5, so six buckets
+        // suffice for Dijkstra's frontier. Tiles at the same distance can run in any order.
+        final int walk = 2, bridge = 5;
+        IntSeq[] buckets = new IntSeq[bridge + 1];
+        for(int i = 0; i < buckets.length; i++) buckets[i] = new IntSeq();
+        int queued = 0;
         for(int[] t : from){
             if(!freeAt(t[0], t[1])) continue;
             int u = t[0] - gx, v = t[1] - gy;
-            if(dist[u][v] > 0){ dist[u][v] = 0; q.add(new long[]{0, u * gh + v}); }
+            if(dist[u][v] == 0) continue;
+            dist[u][v] = 0;
+            buckets[0].add(u * gh + v);
+            queued++;
         }
-        // costs in tenths, as integers
-        int step = 10, jump = 25;
-        while(!q.isEmpty()){
-            long[] cur = q.poll();
-            int id = (int)cur[1], u = id / gh, v = id % gh;
-            if(cur[0] > dist[u][v] * 10 + 0.5f) continue;
-            for(int d = 0; d < 4; d++){
-                for(int k = 1; k <= Math.max(1, range); k++){
-                    int nu = u + Geometry.d4x(d) * k, nv = v + Geometry.d4y(d) * k;
-                    if(nu < 0 || nv < 0 || nu >= gw || nv >= gh) break;
-                    if(!free[nu][nv]) continue;
-                    if(k > 1 && range < 2) break;
-                    long nc = cur[0] + (k == 1 ? step : jump);
-                    if(nc < dist[nu][nv] * 10 - 0.5f){
-                        dist[nu][nv] = nc / 10f;
-                        q.add(new long[]{nc, nu * gh + nv});
+        for(int ticks = 0; queued > 0; ticks++){
+            IntSeq current = buckets[ticks % buckets.length];
+            IntSeq nextWalk = buckets[(ticks + walk) % buckets.length];
+            IntSeq nextBridge = buckets[(ticks + bridge) % buckets.length];
+            while(current.size > 0){
+                int id = current.pop(), u = id / gh, v = id % gh;
+                queued--;
+                if(dist[u][v] < ticks * 0.5f) continue; // a shorter path already reached this tile
+                for(int d = 0; d < 4; d++){
+                    for(int k = 1; k <= Math.max(1, range); k++){
+                        int nu = u + Geometry.d4x(d) * k, nv = v + Geometry.d4y(d) * k;
+                        if(nu < 0 || nv < 0 || nu >= gw || nv >= gh) break;
+                        if(!free[nu][nv]) continue; // a bridge can still land beyond this tile
+                        float cost = (ticks + (k == 1 ? walk : bridge)) * 0.5f;
+                        if(cost < dist[nu][nv]){
+                            dist[nu][nv] = cost;
+                            (k == 1 ? nextWalk : nextBridge).add(nu * gh + nv);
+                            queued++;
+                        }
                     }
                 }
             }
@@ -412,6 +430,19 @@ public class RemotePorts{
      * target, and from every remote water source to its water port. Returns the build plans.
      */
     public Seq<BuildPlan> route(DrillFieldJob.Candidate c, float minLoad){
+        Seq<BuildPlan> lines = route(c, minLoad, materialEfficiency);
+        if(!materialEfficiency || unreached.isEmpty()) return lines;
+        // A cheaper early line can occupy a later line's only corridor. Retain the compact
+        // routing when it connects at least as many lines on a partially reachable network.
+        Seq<String> missed = new Seq<>(unreached);
+        Seq<BuildPlan> compact = route(c, minLoad, false);
+        if(unreached.size < missed.size) return compact;
+        unreached.set(missed);
+        trunkTiles = lines.size;
+        return lines;
+    }
+
+    private Seq<BuildPlan> route(DrillFieldJob.Candidate c, float minLoad, boolean material){
         unreached.clear();
         trunkTiles = 0;
         Seq<BuildPlan> out = new Seq<>();
@@ -423,7 +454,7 @@ public class RemotePorts{
             int[] w = c.waterPortTile(k);
             List<Start> st = new ArrayList<>();
             for(int[] a : waterStart.get(owner)) if(inGrid(a[0], a[1])) st.add(new Start(a[0] - gx, a[1] - gy, a[2], 0, false));
-            if(!line(st, new int[]{w[0], w[1], 1}, used, true, out)) unreached.add(c.userWaters.get(owner).name());
+            if(!line(st, new int[]{w[0], w[1], 1}, used, true, material, out)) unreached.add(c.userWaters.get(owner).name());
         }
         // items
         for(int k = 0; k < c.outPorts.size && k < outRemote.size; k++){
@@ -434,20 +465,32 @@ public class RemotePorts{
             Port e = c.outPorts.get(k);
             List<Start> st = new ArrayList<>();
             if(inGrid(s[0], s[1])) st.add(new Start(s[0] - gx, s[1] - gy, (e.side + 2) % 4, 0, false));
-            if(!line(st, t, used, false, out)) unreached.add(c.userOuts.get(owner).name());
+            if(!line(st, t, used, false, material, out)) unreached.add(c.userOuts.get(owner).name());
         }
         return out;
     }
 
     /** one line from the starts to the footprint t {x, y, size}; marks its tiles used */
-    boolean line(List<Start> starts, int[] t, boolean[][] used, boolean liquid, Seq<BuildPlan> out){
+    boolean line(List<Start> starts, int[] t, boolean[][] used, boolean liquid, boolean material, Seq<BuildPlan> out){
         if(starts.isEmpty()) return false;
         GridRouter r = new GridRouter(gw, gh, new GridRouter.Grid(){
             public double tileCost(int u, int v){ return free[u][v] && !used[u][v] ? 1 : -1; }
             public boolean pushOk(int u, int v){ return !(liquid ? nearLiquids[u][v] : nearItems[u][v]); }
         });
         r.bridgeRange = liquid ? liquidBridgeRange : bridgeRange;
-        r.bridgeCost = 1.5;
+        if(material && r.bridgeRange >= 2){
+            // Price each built tile in units of the chosen belt/pipe. The first jump converts
+            // both endpoints, subsequent jumps in a chain add just the new landing block.
+            // Across a simple path the entire footprint tie-break costs less than one item.
+            double footprint = 1.0 / (1.0 + (double)gw * gh);
+            double pipe = requiredItems(liquid ? conduit : belt) + footprint;
+            double span = requiredItems(liquid ? liquidBridge : bridge) + footprint;
+            // The search's initial tile already contributes one pipe unit. Charge the
+            // difference for the source and landing bridges on the first jump, then
+            // charge one new bridge for each later landing in a chain.
+            r.bridgeCost = r.bridgeStartCost = Math.max(0, (span - pipe) / pipe);
+            r.turnCost = 0;
+        }
         List<Step> path = r.route(starts, t[0] - gx, t[1] - gy, t[2]);
         if(path == null) return false;
         for(Step s : path){
@@ -462,5 +505,11 @@ public class RemotePorts{
             }
         }
         return true;
+    }
+
+    long requiredItems(Block block){
+        long total = 0;
+        for(ItemStack stack : block.requirements) total += Math.round(stack.amount * buildCostMultiplier);
+        return total;
     }
 }
