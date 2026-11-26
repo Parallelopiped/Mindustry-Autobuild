@@ -7,6 +7,16 @@ change behaviour or settings).
 
 ## [Unreleased]
 
+## [1.3.8] - 2026-11-26
+### Changed (#7, @deathbook)
+- Max efficiency: lines to outputs and water away from the region are priced by the build cost of
+  their blocks, so they use more plain conveyors / conduits and fewer bridges (less copper and
+  lead). If that leaves a line unconnected, the old compact route is kept when it connects more.
+- Faster distance flood for choosing field exits (bucket queue; same distances).
+- Bridge-lattice search: less memory and CPU (same layouts).
+### Fixed
+- CI: the Gradle project name is fixed, so the release workflow finds and attaches the jar.
+
 ## [1.3.7] - 2026-11-09
 ### Fixed
 - Crash (`ArrayIndexOutOfBoundsException` in `RemotePorts.edgePortsFacing`) when a water input away
